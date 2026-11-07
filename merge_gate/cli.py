@@ -249,9 +249,15 @@ def main(argv: list[str] | None = None) -> int:
                        repo_path=args.repo)
 
     if args.cmd == "rollback":
+        import logging
+
         from .rollback import main as rollback_main
 
-        return rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github, args.base, args.respect_override)
+        logging.basicConfig(format="[merge-gate] %(levelname)s: %(message)s")  # rollback's warnings -> stderr
+        code, out, err = rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github, args.base, args.respect_override)
+        sys.stdout.write(out)
+        print(err, file=sys.stderr)
+        return code
 
     if args.cmd == "serve":
         from .serve import serve
