@@ -322,6 +322,7 @@ def test_fan_out_testwriter_exception_becomes_a_note(tmp_path, monkeypatch):
 
 
 def test_step_timeouts_cover_the_llm_and_both_sandbox_runs():
+    pytest.importorskip("uagents")
     import inspect
 
     from agents.team import step_timeout

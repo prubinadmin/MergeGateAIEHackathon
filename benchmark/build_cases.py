@@ -1455,7 +1455,8 @@ def _git(repo: str, *args: str, who: tuple[str, str] | None = None) -> str:
     env = dict(os.environ)
     if who:
         env.update(GIT_AUTHOR_NAME=who[0], GIT_AUTHOR_EMAIL=who[1], GIT_COMMITTER_NAME=who[0], GIT_COMMITTER_EMAIL=who[1])
-    return subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, text=True, env=env).stdout
+    return subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env).stdout
 
 
 def _commit(repo: str, files: dict[str, str | None], who: tuple[str, str], msg: str) -> None:

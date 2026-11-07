@@ -305,6 +305,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
                 github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
                 blocked = True
+            if action.kind == "teach" and action.text:
+                state.notifier.send(inbound.phone, action.text)  # ack now; the outcome follows
             _teach_or_forget(state, inbound.phone, r, reply.note, action.kind)
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
 
