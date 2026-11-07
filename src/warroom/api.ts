@@ -175,6 +175,11 @@ export const getMessage = (pr_id: string) =>
     return m;
   }, { method: 'POST', body: JSON.stringify({ pr_id }) });
 /** Sends the verdict to the code owner's real phone (Sendblue on the server; console if no keys). */
+/** Clone a live public GitHub PR into the gate (pr_id gh:owner/repo#N); then runGate(pr_id) as usual. */
+export const scanGithub = (query: string) => {
+  if (replayMode()) return Promise.reject(new Error('Scanning live GitHub PRs needs the live gate (python -m merge_gate serve).'));
+  return j<DemoPr & { url: string; repo: string; number: number }>('/api/github', { method: 'POST', body: JSON.stringify({ query }) });
+};
 export const pageOwner = (pr_id: string, pr_url = '', github?: { repo: string; number: number }) =>
   live<{ to: Owner | null; text: string; sent: string | null }>('/api/message', () => {
     throw new Error('Paging a real phone needs the live gate (python -m merge_gate serve).');

@@ -2,6 +2,7 @@
 
   GET  /api/health
   GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo)
+  POST /api/github   {"query": "vllm" | "owner/repo" | "owner/repo#N" | PR URL} -> clones the live PR, returns it as a gate PR (pr_id gh:owner/repo#N) for /api/run
   POST /api/verify   {"pr_id": "demo-1"}                 -> verdict report (real rules, blame, sandbox, Muse)
        or          {"repo_path", "base_ref", "head_ref", "issue_text", "title", "opened_by", "pr_id"}
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
@@ -359,6 +360,27 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 threading.Thread(target=answer, daemon=True).start()
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 
+        def _github(self, body: dict) -> None:
+            """Resolve + clone a live public GitHub PR and register it as a gate PR (then /api/run it)."""
+            from . import github_pr
+
+            query = (body.get("query") or "").strip()
+            if not query:
+                return self._send(400, {"error": "query required: a repo name (vllm), owner/repo, owner/repo#N or a PR URL"})
+            try:
+                resolved = github_pr.resolve(query)
+                pr = github_pr.materialize(resolved)
+            except Exception as e:  # noqa: BLE001 - the UI shows the reason verbatim
+                return self._send(400, {"error": f"{type(e).__name__}: {e}"})
+            with state.lock:
+                state.prs[pr.pr_id] = pr
+                state.reports.pop(pr.pr_id, None)
+            return self._send(200, {
+                "pr_id": pr.pr_id, "title": pr.title, "issue_text": pr.issue_text, "opened_by": pr.opened_by,
+                "files": pr.changed_files(), "diff": pr.diff()[:200_000], "url": resolved.html_url,
+                "repo": resolved.full_name, "number": resolved.number,
+            })
+
         def do_POST(self) -> None:
             if not self._origin_ok():
                 return self._send(403, {"error": "origin not allowed"})
@@ -366,6 +388,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 body = self._body()
                 if self.path == "/api/verify":
                     return self._send(200, state.verify(body).to_dict())
+                if self.path == "/api/github":
+                    return self._github(body)
                 if self.path == "/api/message":
                     r = state.report(body["pr_id"])
                     text = format_message(r, body.get("pr_url", ""))
