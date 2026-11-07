@@ -109,6 +109,7 @@ def test_webhook_end_to_end(tmp_path, monkeypatch):
 
     state = serve.State(use_llm=False)
     state.notifier = imessage.ConsoleNotifier()  # never hit Sendblue from tests, even if keys are in .env
+    state.auto_page = False  # this test drives paging by hand; auto-paging has its own test
     state.demo()
     owner_email = state.report("demo-1").owners[0].email
     monkeypatch.setenv("OWNER_PHONES", json.dumps({owner_email: OWNER}))
@@ -178,3 +179,38 @@ def test_converse_block_must_say_block(monkeypatch):
 def test_converse_falls_back_when_muse_fails():
     action = imessage.handle_inbound(imessage.Inbound(OWNER, "WHY"), _block_report())[0]
     assert imessage.converse(_block_report(), "WHY", action) == action.text
+
+
+def test_auto_page_on_verdict_and_no_duplicate(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    from merge_gate import serve
+
+    state = serve.State(use_llm=False)
+    state.notifier = imessage.ConsoleNotifier()
+    state.demo()
+    owner = state.verify({"pr_id": "demo-1"}).owners[0]
+    monkeypatch.setenv("OWNER_PHONES", json.dumps({owner.email: OWNER}))
+    state._paged.clear(); state.notifier.sent.clear()
+
+    stages = []
+    r = state.verify({"pr_id": "demo-1"}, on_stage=lambda n, st, d: stages.append((n, st, d)))
+    assert len(state.notifier.sent) == 1 and r.verdict == "BLOCK"  # paged with no click
+    done = [d for n, st, d in stages if n == "page" and st == "done"][0]
+    assert done["to"] == owner.name and done["sent"] == "console-1"
+    assert imessage.phone_key(OWNER) in state.threads  # the owner's reply has a thread to land in
+
+    state.verify({"pr_id": "demo-1"})  # identical result: no second text
+    assert len(state.notifier.sent) == 1
+
+
+def test_auto_page_can_be_switched_off(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MERGE_GATE_AUTO_PAGE", "0")
+    from merge_gate import serve
+
+    state = serve.State(use_llm=False)
+    state.notifier = imessage.ConsoleNotifier()
+    state.demo()
+    state.verify({"pr_id": "demo-1"})
+    assert state.notifier.sent == []
