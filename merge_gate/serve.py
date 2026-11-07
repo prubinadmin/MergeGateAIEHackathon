@@ -225,9 +225,15 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
                 github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
                 blocked = True
-            if action.text:
-                state.notifier.send(inbound.phone, action.text)
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
+
+            def answer() -> None:  # Muse can take seconds; Sendblue gets its 200 now, the owner gets the text after
+                try:
+                    state.notifier.send(inbound.phone, imessage.converse(r, reply.raw, action, thread["pr_url"]))
+                except Exception as e:  # noqa: BLE001 - never lose the reply silently
+                    print(f"[merge-gate] reply to owner failed: {type(e).__name__}: {e}", flush=True)
+
+            threading.Thread(target=answer, daemon=True).start()
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 
         def do_POST(self) -> None:

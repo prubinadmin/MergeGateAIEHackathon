@@ -16,6 +16,12 @@ SECRET = "s" * 24
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
+    import merge_gate.llm as llm
+
+    def no_network(*a, **k):
+        raise RuntimeError("no LLM in tests")
+
+    monkeypatch.setattr(llm, "complete", no_network)  # converse() must fall back to the plain-code text
     for k in ("SENDBLUE_API_KEY", "SENDBLUE_API_SECRET", "SENDBLUE_FROM_NUMBER"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("OWNER_PHONES", json.dumps({"Peter@Example.com": OWNER}))
@@ -122,6 +128,53 @@ def test_webhook_end_to_end(tmp_path, monkeypatch):
         assert code == 200 and out["action"] == "send_text"
         code, out = _post(port, hook, {"from_number": OWNER, "content": "BLOCK"})
         assert code == 200 and out == {"command": "BLOCK", "action": "block_pr", "github_blocked": False}
+        import time
+        for _ in range(100):  # owner replies are sent from a background thread
+            if len(state.notifier.sent) >= 3:
+                break
+            time.sleep(0.05)
         assert len(state.notifier.sent) == 3  # the page, the WHY answer, the "Blocked" confirmation
     finally:
         httpd.shutdown()
+
+
+# --- conversational replies ---------------------------------------------------------------------------
+
+def _block_report():
+    from merge_gate.schema import Evidence
+    return VerdictReport(pr_id="p1", verdict="BLOCK", owners=[Owner("Peter", "peter@example.com", 3, "2026-03-01")],
+                         evidence=[Evidence(type="rule", id="R1_DELETED_TEST", detail="PR deletes test_x")], run_hash="sha256:abc")
+
+
+def test_converse_uses_muse_wording(monkeypatch):
+    import merge_gate.llm as llm
+    seen = {}
+
+    def fake(developer, user, **k):
+        seen["user"] = user
+        return "Done, I blocked p1: it deletes test_x, which is the test that guards your discount rule."
+
+    monkeypatch.setattr(llm, "complete", fake)
+    action = imessage.handle_inbound(imessage.Inbound(OWNER, "BLOCK"), _block_report())[0]
+    text = imessage.converse(_block_report(), "BLOCK", action)
+    assert text.startswith("Done, I blocked p1") and "R1_DELETED_TEST" in seen["user"] and "block_pr" in seen["user"]
+
+
+def test_converse_never_claims_approval(monkeypatch):
+    import merge_gate.llm as llm
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "All good, I approved and merged it for you.")
+    action = imessage.handle_inbound(imessage.Inbound(OWNER, "OK"), _block_report(), "https://github.com/o/r/pull/7")[0]
+    text = imessage.converse(_block_report(), "OK", action, "https://github.com/o/r/pull/7")
+    assert text == action.text and "github.com/o/r/pull/7" in text
+
+
+def test_converse_block_must_say_block(monkeypatch):
+    import merge_gate.llm as llm
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Got it, thanks!")
+    action = imessage.handle_inbound(imessage.Inbound(OWNER, "BLOCK"), _block_report())[0]
+    assert imessage.converse(_block_report(), "BLOCK", action) == action.text
+
+
+def test_converse_falls_back_when_muse_fails():
+    action = imessage.handle_inbound(imessage.Inbound(OWNER, "WHY"), _block_report())[0]
+    assert imessage.converse(_block_report(), "WHY", action) == action.text

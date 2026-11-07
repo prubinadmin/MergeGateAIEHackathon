@@ -112,3 +112,42 @@ def handle_inbound(inbound: Inbound, report: VerdictReport, pr_url: str = "") ->
     if not expected or phone_key(expected) != phone_key(inbound.phone):
         return Action("none"), reply, False
     return handle_reply(report, reply, pr_url), reply, True
+
+
+# --- conversational replies ------------------------------------------------------------------------
+# The ACTION (block / why / ok / false alarm) is always decided by plain code above. Muse Spark only words
+# the text the owner reads, from the verdict's own facts, so the reply sounds like a person, not a template.
+
+_FORBIDDEN = re.compile(r"\b(approv\w*|merg(ed|ing)|lgtm|ship(ped)? it)\b", re.I)
+
+
+def _facts(report: VerdictReport, pr_url: str) -> str:
+    ev = "\n".join(f"- [{e.severity}] {e.id}: {e.detail}" for e in report.evidence) or "- none"
+    owner = report.owners[0].name if report.owners else "unknown"
+    return (f"PR: {report.pr_id} {pr_url}\nVerdict (decided by plain code, not you): {report.verdict}\n"
+            f"Code owner you are texting: {owner}\nEvidence:\n{ev}\nRun hash: {report.run_hash}")
+
+
+def converse(report: VerdictReport, owner_text: str, action: Action, pr_url: str = "") -> str:
+    """Muse-written reply for the owner. Falls back to the plain-code text on any failure or rule break."""
+    fallback = action.text or "Reply BLOCK, WHY, OK or FALSE ALARM."
+    try:
+        from .llm import complete
+
+        developer = (
+            "You are Merge Gate, texting the engineer who wrote the code a pull request changes. "
+            "Write 1-3 short, plain sentences like a sharp colleague on iMessage: no markdown, no lists, no emoji. "
+            "Use ONLY the facts given. The action below has ALREADY been taken by plain code; describe it, never "
+            "invent another. Never say or imply the PR is approved, merged or safe to ship: approval only happens "
+            "on GitHub with the owner's own login. If the owner asks something the facts can't answer, say so "
+            "and suggest replying WHY or BLOCK.")
+        user = (f"{_facts(report, pr_url)}\n\nAction already taken: {action.kind}\n"
+                f"Plain-code reply you are rewording: {fallback}\n\nOwner's message: {owner_text[:500]}")
+        text = complete(developer, user, temperature=0.4, timeout_s=25, retries=1, use_cache=False).strip()
+    except Exception:  # noqa: BLE001 - the plain-code text is always a safe reply
+        return fallback
+    if not text or len(text) > 700 or _FORBIDDEN.search(text):
+        return fallback
+    if action.kind == "block_pr" and "block" not in text.lower():
+        return fallback  # a BLOCK confirmation must say so explicitly
+    return text
