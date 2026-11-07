@@ -272,7 +272,18 @@ export default function WarRoom() {
     return m;
   }, [r, c.stages.rules]);
   const tg = c.stages.testgen;
-  const owners = (c.stages.owners?.owners || r?.owners || []) as Report['owners'];
+  // Once routing is done, the routed order (report, or the routing stage's pick) replaces the blame order.
+  const rt = c.stages.routing?.status === 'done' ? c.stages.routing : undefined;
+  const blameOrder = (c.stages.owners?.owners || []) as Report['owners'];
+  const owners: Report['owners'] = r?.owners
+    || (rt?.to ? [rt.to, ...blameOrder.filter((o) => o.email !== rt.to.email || o.name !== rt.to.name)] : blameOrder);
+  const route = r || rt;
+  const routeLine = route && (rt || r?.urgency)
+    ? [
+      route.routed_by === 'subq' ? `routed by SubQ · ${Math.round((route.route_confidence || 0) * 100)}% confidence` : 'routed by blame',
+      route.urgency ? `urgency ${route.urgency}` : '',
+    ].filter(Boolean).join(' · ')
+    : '';
 
   return (
     <div className="flex-1 bg-[#0a0a0b] text-zinc-100">
@@ -318,9 +329,9 @@ export default function WarRoom() {
               <span className={`w-2 h-2 rounded-full ${r ? (r.verdict === 'BLOCK' ? 'bg-red-500' : r.verdict === 'PASS' ? 'bg-emerald-500' : 'bg-sky-500') : 'bg-zinc-600'}`} />
               {!r && running !== sel && 'Pick a PR and run the gate.'}
               {running === sel && 'Running the real gate on this PR…'}
-              {r?.verdict === 'BLOCK' && `BLOCK. The merge button was never reachable${c.ownerBlocked ? '; the owner confirmed from their phone' : ''}.`}
-              {r?.verdict === 'REVIEW' && 'REVIEW. The merge waits for the code owner.'}
-              {r?.verdict === 'PASS' && 'PASS. Nothing found; the owner gets an FYI.'}
+              {r?.verdict === 'BLOCK' && `Auto-rejected. The merge button was never reachable${c.ownerBlocked ? '; the owner confirmed from their phone' : ''}.`}
+              {r?.verdict === 'REVIEW' && (c.ownerBlocked ? 'The owner decided: BLOCK, from their phone.' : 'Owner decides. The merge waits for the engineer who wrote this code.')}
+              {r?.verdict === 'PASS' && 'Auto-passed. Nothing found; the owner gets an FYI.'}
             </div>
           </div>
 
@@ -339,6 +350,11 @@ export default function WarRoom() {
                     <Play size={14} /> {running === pr.pr_id ? 'Running…' : r ? 'Run again' : 'Run the gate'}
                   </button>
                   <button onClick={() => setShowDiff((s) => !s)} className="text-[12.5px] text-zinc-400 hover:text-zinc-200">{showDiff ? 'Hide diff' : 'View diff'}</button>
+                  {pr.github_url && (
+                    <a href={pr.github_url} target="_blank" rel="noreferrer" className="text-[12.5px] text-amber-300 hover:text-amber-200">
+                      Open on GitHub ↗
+                    </a>
+                  )}
                 </div>
                 {showDiff && (
                   <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-black/60 p-3 text-[11.5px] leading-relaxed">
@@ -357,7 +373,17 @@ export default function WarRoom() {
               <div className="flex items-center gap-4">
                 <span className={`rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(r?.verdict)}`}>{r?.verdict || '—'}</span>
                 <div className="text-[13.5px] text-zinc-300">
-                  {r ? (r.verdict === 'PASS' ? 'Every check passed.' : `${r.evidence.length} piece${r.evidence.length === 1 ? '' : 's'} of evidence. Sent to ${r.owners[0]?.name || 'the code owner'}.`) : 'No verdict yet.'}
+                  {r && (
+                    <div className={`mb-1 inline-block rounded px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider ${r.verdict === 'BLOCK' ? 'bg-red-500/20 text-red-300' : r.verdict === 'REVIEW' ? 'bg-sky-500/20 text-sky-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                      {r.verdict === 'BLOCK' ? 'AUTO-REJECTED' : r.verdict === 'REVIEW' ? 'OWNER DECIDES' : 'AUTO-PASSED'}
+                    </div>
+                  )}
+                  <div>
+                    {!r && 'No verdict yet.'}
+                    {r?.verdict === 'BLOCK' && `The evidence is conclusive, so the gate rejects it on its own. ${r.owners[0]?.name || 'The owner'} is told, with proof.`}
+                    {r?.verdict === 'REVIEW' && `Nothing is provably wrong, so the gate does not decide alone. ${r.owners[0]?.name || 'The owner'}, who wrote this code, decides by text.`}
+                    {r?.verdict === 'PASS' && `Every check passed. ${r.owners[0]?.name || 'The owner'} gets a one-line FYI.`}
+                  </div>
                   {r && <div className="mt-0.5 font-mono text-[11px] text-zinc-500">gate {r.gate_version} · decided by decide(), plain code, no AI</div>}
                 </div>
               </div>
@@ -418,6 +444,7 @@ export default function WarRoom() {
                       {i === 0 && <span className="rounded bg-amber-500/15 px-1.5 text-[10.5px] text-amber-300">gets the text</span>}
                     </div>
                   ))}
+                  {routeLine && <div className="pt-1 font-mono text-[11.5px] text-amber-300/90">{routeLine}</div>}
                 </div>
               )}
             </Lane>
@@ -466,18 +493,39 @@ export default function WarRoom() {
           <div className="lg:col-span-2 xl:col-span-1">
             <Phone owner={r?.owners[0]?.name} c={c} onReply={reply} busy={replyBusy} />
             <div className="mx-auto mt-3 w-[300px]">
-              <button onClick={() => page(sel)} disabled={recorded || !r || r.verdict === 'PASS' || paging[sel]?.status === 'sending'}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 text-[13px] font-semibold text-amber-200 transition-colors duration-150 hover:bg-amber-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-35">
-                {paging[sel]?.status === 'sending' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-                {recorded ? 'Paging needs the live gate' : paging[sel]?.status === 'sending' ? 'Paging…' : `Page ${r?.owners[0]?.name || 'the owner'}'s real phone`}
-              </button>
-              {paging[sel] && paging[sel].status !== 'sending' && (
-                <div role="status" className={`mt-2 flex items-start gap-1.5 text-[12px] ${paging[sel].status === 'sent' ? 'text-emerald-300' : 'text-red-300'}`}>
-                  {paging[sel].status === 'sent' ? <Smartphone size={13} className="mt-0.5 shrink-0" /> : <Lock size={13} className="mt-0.5 shrink-0" />}
-                  {paging[sel].note}
-                </div>
-              )}
-              {!r && <div className="mt-2 text-[11.5px] text-zinc-500">Run the gate first; only a BLOCK or REVIEW pages the owner.</div>}
+              {(() => {
+                // agentic paging: the server texts the owner itself as soon as the verdict lands
+                const auto = c.stages.page;
+                const manual = paging[sel];
+                const status = manual?.status === 'sending' ? 'sending' : manual ? manual.status
+                  : auto?.status === 'start' ? 'sending'
+                  : auto?.status === 'done' ? (auto.sent ? 'sent' : auto.skipped ? 'skipped' : 'error') : null;
+                const note = manual ? manual.note
+                  : auto?.sent ? `Texted ${auto.to} automatically, ${r?.verdict === 'PASS' ? 'as an FYI' : 'with the evidence'}.`
+                  : auto?.skipped ? `${auto.to || 'Owner'} already has this exact result; not texting twice.`
+                  : auto?.error ? `Couldn't text the owner: ${auto.error}` : '';
+                return (
+                  <>
+                    {recorded && <div className="text-[12px] text-zinc-500">Live runs text the code owner automatically; this is a recording.</div>}
+                    {!recorded && status === 'sending' && (
+                      <div role="status" className="flex items-center gap-1.5 text-[12px] text-amber-200"><Loader2 size={13} className="animate-spin" /> Texting the code owner…</div>
+                    )}
+                    {!recorded && status && status !== 'sending' && (
+                      <div role="status" className={`flex items-start gap-1.5 text-[12px] ${status === 'error' ? 'text-red-300' : 'text-emerald-300'}`}>
+                        {status === 'error' ? <Lock size={13} className="mt-0.5 shrink-0" /> : <Smartphone size={13} className="mt-0.5 shrink-0" />}
+                        {note}
+                      </div>
+                    )}
+                    {!recorded && !r && <div className="text-[11.5px] text-zinc-500">The gate texts the code owner itself the moment it decides.</div>}
+                    {!recorded && r && status && status !== 'sending' && (
+                      <button onClick={() => page(sel)}
+                        className="mt-2 flex items-center gap-1.5 text-[11.5px] text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400">
+                        <Send size={12} /> Text {r.owners[0]?.name || 'the owner'} again
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             {c.ownerBlocked && (
               <div className="mx-auto mt-3 w-[300px] rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-2 text-[12px] text-red-200 flex items-center gap-2">

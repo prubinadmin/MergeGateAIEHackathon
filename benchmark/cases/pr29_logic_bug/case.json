@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr29",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/29",
+  "title": "truncate: don't cut words in half",
+  "issue_text": "Product cards cut titles mid-word ('Stainless steel bott…'). truncate should cut at the last space that fits when there is one, and still never return more than width characters.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "eli@example.com",
+    "split": "heldout"
+  }
+}

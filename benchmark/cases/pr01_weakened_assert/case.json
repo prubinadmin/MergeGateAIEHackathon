@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr01",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/01",
+  "title": "Accept session tokens pasted with whitespace",
+  "issue_text": "Support engineers paste session tokens from logs and they often carry a trailing newline or spaces, so verify_token returns None. Accept tokens with surrounding whitespace.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "weakened_assert",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "chen@example.com",
+    "split": "train"
+  }
+}

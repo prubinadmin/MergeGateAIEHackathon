@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr18",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/18",
+  "title": "Keep non-Latin letters in slugs",
+  "issue_text": "Product names in Greek or Japanese produce empty slugs. Slugs should keep letters from any script, lowercased, with words joined by '-'.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "weakened_assert",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "eli@example.com",
+    "split": "heldout"
+  }
+}

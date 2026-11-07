@@ -42,7 +42,7 @@ python scripts/analyze_test_cases.py test_cases/02_performance_latency_slowdown.
 ```bash
 python -m merge_gate serve            # HTTP API on 127.0.0.1:8787 for the web UI and the iMessage webhook
 python -m merge_gate log              # run log; checks the hash chain
-python -m merge_gate learn            # one learning round on benchmark/ (needs Peter's cases)
+python -m merge_gate learn            # one learning round on benchmark/ (results: benchmark/RESULTS.md)
 python -m merge_gate ci               # inside GitHub Actions: see templates/merge-gate.yml
 ```
 
@@ -59,6 +59,37 @@ API (all JSON):
 To enforce on a repo: copy `templates/merge-gate.yml` to `.github/workflows/`, add `MUSE_API_KEY` as a
 secret, and make `merge-gate` a required status check. BLOCK -> failure, REVIEW -> pending,
 PASS -> success. Only a code owner's GitHub approval (`OWNER_GITHUB` variable) overrides a finding.
+
+### Rollback
+
+Something already landed? Re-verify it with the same rules, owners and Muse flags as a PR
+(base = `<sha>^1`, head = `<sha>`; works for merge commits and plain commits):
+
+```bash
+python -m merge_gate rollback <sha> [--repo PATH]                       # BLOCK -> local branch merge-gate/revert-<sha>
+python -m merge_gate rollback <sha> --push --github owner/repo          # also push it and open a revert PR (GITHUB_TOKEN)
+python -m merge_gate rollback <sha> --base <before>                     # verify a multi-commit push as one diff
+```
+
+PASS/REVIEW does nothing and says why. Skipped (exit 0): Merge Gate's own reverts (no revert-of-revert
+loop), root commits, and PRs a code owner overrode on GitHub (`--no-respect-override` to revert anyway;
+needs GITHUB_TOKEN + `--github`, else it warns and proceeds). When the PR is found on GitHub, its body
+and author are the gate's inputs, the same as in the PR run. The revert is built in a temporary
+`git worktree`, so your checkout is never touched; it never pushes to the default branch and never
+force-pushes; a failed push/PR leaves no local branch, and a remote branch from an earlier attempt is
+reused. Each run logs the verdict (source `rollback`) and a `rollback` action record on the same hash chain.
+
+To run it on every push to main: `templates/merge-gate-rollback.yml`. A PR opened with the Actions
+`GITHUB_TOKEN` does not trigger `pull_request` workflows, so if `merge-gate` is a required check the
+revert PR could never pass it. Add a fine-grained PAT as secret `MERGE_GATE_TOKEN` (Contents + Pull
+requests: write, Commit statuses: read); the template uses `${{ secrets.MERGE_GATE_TOKEN || secrets.GITHUB_TOKEN }}`.
+
+### Fetch.ai agent: run the gate inside an ASI:One chat
+```bash
+pip install -e ".[agent]"
+export MERGE_GATE_AGENT_SEED="<long random phrase>"
+python -m agents.merge_gate_agent    # then follow agents/README.md to connect the mailbox and chat in ASI:One
+```
 
 ### 3. War Room UI (live, real gate) and the concept simulator
 ```bash
@@ -88,9 +119,9 @@ is still available under its own tab (`#simulator`).
 | GitHub status check, PR comment, owner BLOCK | Michael | `merge_gate/github.py`, `merge_gate/ci.py`, `templates/merge-gate.yml` | done |
 | HTTP API for UI + iMessage webhook | Michael | `merge_gate/serve.py` | done |
 | Hash-chained run log (Mongo mirror optional) | Michael | `merge_gate/store.py` | done |
-| Learning loop, held-out adoption | Michael | `merge_gate/learn.py`, `gate_versions/` | done; needs benchmark cases |
+| Learning loop, held-out adoption | Michael | `merge_gate/learn.py`, `gate_versions/` | done; rounds in `benchmark/RESULTS.md` |
 | iMessage send / reply | TAAZ | `merge_gate/notify.py` (`Notifier`, `parse_reply`, `handle_reply`) | console stub works; plug in the iMessage provider |
-| Benchmark cases + scoring | Peter | `benchmark/`, `merge_gate/bench.py` | format + scoring done; cases to build |
+| Benchmark cases + scoring | Peter | `benchmark/`, `merge_gate/bench.py`, `merge_gate/baselines.py` | 30 cases (simulated authors), baselines, `benchmark/RESULTS.md` |
 | Interactive Web Dashboard & Simulator | Peter / Frontend | `src/`, `index.html` | done |
 
 ---

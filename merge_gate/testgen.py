@@ -163,7 +163,12 @@ def independent_check(pr: PullRequest, timeout_s: int = 60) -> TestGenResult:
     except (llm.LLMError, SyntaxError, ValueError) as e:
         res.error = f"test writer unavailable: {e}"
         return res
+    return check_generated(pr, res.source, timeout_s)
 
+
+def check_generated(pr: PullRequest, source: str, timeout_s: int = 60) -> TestGenResult:
+    """Run spec-only tests on base, drop the ones base already fails, then run the rest on head."""
+    res = TestGenResult(source=source)
     name = "test_gate_spec.py"
     res.base = run_tests(pr.repo_path, pr.base_ref, {name: res.source}, timeout_s)
     if res.base.errored and not res.base.failed:

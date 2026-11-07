@@ -7,9 +7,11 @@ export const API_BASE: string =
 // The demo PRs also live in a real GitHub repo; a BLOCK from the owner's phone fails that PR's merge-gate check.
 export const DEMO_GITHUB_REPO: string =
   (import.meta as any).env?.VITE_DEMO_GITHUB_REPO || 'Michaelwei08/merge-gate-demo-shop';
+// demo PR id -> PR number in the GitHub demo repo (#4 there was a closed CI probe, so demo-4 is #5).
+const DEMO_PR_NUMBERS: Record<string, number> = { 'demo-1': 1, 'demo-2': 2, 'demo-3': 3, 'demo-4': 5 };
 export function githubFor(pr_id: string): { repo: string; number: number } | undefined {
-  const m = /^demo-(\d+)$/.exec(pr_id);
-  return m && DEMO_GITHUB_REPO ? { repo: DEMO_GITHUB_REPO, number: Number(m[1]) } : undefined;
+  const n = DEMO_PR_NUMBERS[pr_id];
+  return n && DEMO_GITHUB_REPO ? { repo: DEMO_GITHUB_REPO, number: n } : undefined;
 }
 export const prUrl = (pr_id: string) => {
   const g = githubFor(pr_id);
@@ -51,6 +53,10 @@ export interface Report {
   summary: string;
   run_hash: string;
   gate_version: string;
+  routed_by?: 'subq' | 'blame';
+  route_confidence?: number | null;
+  urgency?: '' | 'page' | 'fyi';
+  urgency_p?: number | null;
 }
 
 export interface DemoPr {
@@ -60,6 +66,7 @@ export interface DemoPr {
   opened_by: string;
   files: string[];
   diff: string;
+  github_url?: string;  // set when the case is a real GitHub PR (MERGE_GATE_DEMO_GITHUB)
 }
 
 export interface Stats {
@@ -75,7 +82,7 @@ export interface Stats {
   llm: boolean;
 }
 
-export type StageName = 'rules' | 'owners' | 'testgen' | 'decide' | 'summary';
+export type StageName = 'rules' | 'owners' | 'testgen' | 'decide' | 'routing' | 'summary' | 'page';
 export type StageStatus = 'idle' | 'start' | 'done' | 'skipped';
 
 export interface StageEvent {
