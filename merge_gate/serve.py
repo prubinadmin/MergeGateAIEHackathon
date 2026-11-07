@@ -4,6 +4,7 @@
   GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo; or, with
                                       MERGE_GATE_DEMO_GITHUB=owner/name, that repo's open PRs, and each
                                       verdict is published back to the PR)
+  POST /api/github   {"query": "vllm" | "owner/repo" | "owner/repo#N" | PR URL} -> clones the live PR, returns it as a gate PR (pr_id gh:owner/repo#N) for /api/run
   POST /api/verify   {"pr_id": "demo-1"}                 -> verdict report (real rules, blame, sandbox, Muse)
        or          {"repo_path", "base_ref", "head_ref", "issue_text", "title", "opened_by", "pr_id"}
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
@@ -16,12 +17,17 @@
   GET  /api/run?pr_id=demo-1&llm=1     Server-Sent Events: one event per real stage as it starts/finishes, then the report
   GET  /api/stats                     counters for the header bar, from the run log
 
+Agentic paging: every verdict from /api/verify or /api/run texts the code owner on its own (the "page" SSE stage,
+start/done, carries what was sent); MERGE_GATE_AUTO_PAGE=0 turns it off. Lazy verifies behind /api/message,
+/api/reply and /api/sendblue never text anyone; only an explicit {"send": true} on /api/message does.
+
 Stdlib only. CORS is open so the Vite dev server can call it. Bind to localhost.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import statistics
 import threading
@@ -32,11 +38,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import imessage, store
 from .llm import load_dotenv
 from .demo import build_demo_repo, demo_prs
-from .notify import format_message, handle_reply, parse_reply
+from .notify import Action, format_message, handle_reply, parse_reply
 from .pr import PullRequest
 from .schema import VerdictReport
 
 DEMO_ROOT = os.path.join("runs", "demo")
+logger = logging.getLogger("merge_gate.serve")
 
 
 class State:
@@ -53,7 +60,8 @@ class State:
         self.threads: dict[str, dict] = {}
         # agentic paging: every verdict texts the code owner on its own (MERGE_GATE_AUTO_PAGE=0 turns it off)
         self.auto_page = os.environ.get("MERGE_GATE_AUTO_PAGE", "1") != "0"
-        self._paged: set[tuple[str, str]] = set()  # (pr_id, run_hash): never re-page an identical result
+        # (pr_id, run_hash) -> None, insertion-ordered: never re-page an identical result; the oldest fall out past 500
+        self._paged: dict[tuple[str, str], None] = {}
         # MERGE_GATE_DEMO_GITHUB=owner/name: demo cases are that repo's open PRs, and verdicts go back to them.
         self.github_repo = os.environ.get("MERGE_GATE_DEMO_GITHUB", "").strip()
         self.github_prs: dict[str, object] = {}  # pr_id -> demo_github.GithubPr
@@ -100,13 +108,10 @@ class State:
         self.published[report.pr_id] = note
         store.append("github_publish", {"pr_id": report.pr_id, "note": note})
 
-    def verify(self, body: dict, on_stage=None, steps=None, source: str = "api",
-               started: float | None = None) -> VerdictReport:
-        """started: time.monotonic() when the run began, if earlier work (the agent fan-out) counts toward ms."""
-        from .verify import verify
-
+    def _pr_from_body(self, body: dict) -> PullRequest:
+        """A custom PR from the request (repo_path + head_ref), or one of the demo PRs by pr_id."""
         if "repo_path" in body:
-            pr = PullRequest(
+            return PullRequest(
                 pr_id=body.get("pr_id") or "custom",
                 repo_path=body["repo_path"],
                 base_ref=body.get("base_ref", "main"),
@@ -115,31 +120,46 @@ class State:
                 title=body.get("title", ""),
                 opened_by=body.get("opened_by", ""),
             )
-        else:
-            self.demo()
-            pr = self.prs.get(body.get("pr_id", ""))
-            if pr is None:
-                raise KeyError(f"unknown pr_id {body.get('pr_id')!r}")
+        self.demo()
+        pr = self.prs.get(body.get("pr_id", ""))
+        if pr is None:
+            raise KeyError(f"unknown pr_id {body.get('pr_id')!r}")
+        return pr
+
+    def _auto_page(self, report: VerdictReport, body: dict, on_stage, auto_page: bool | None) -> None:
+        """Agentic paging after a verdict: text the owner on its own; on_stage sees page start/done."""
+        if not ((self.auto_page if auto_page is None else auto_page) and report.owners):
+            return
+        if on_stage:
+            on_stage("page", "start", {})
+        try:
+            out = self.page(report, body.get("pr_url", ""), body.get("github") or {}, dedupe=True)
+        except Exception as e:  # noqa: BLE001 - a failed text must never fail the verdict
+            out = {"error": f"{type(e).__name__}: {e}"}
+        if on_stage:
+            on_stage("page", "done", out)
+
+    def verify(self, body: dict, on_stage=None, steps=None, source: str = "api",
+               started: float | None = None, auto_page: bool | None = None) -> VerdictReport:
+        """started: time.monotonic() when the run began, if earlier work (the agent fan-out) counts toward ms.
+        auto_page: override the server default for this run (report() passes False: a lazy verify never texts)."""
+        from .verify import verify
+
+        pr = self._pr_from_body(body)
         use_llm = body.get("llm", self.use_llm)
         use_subq = self.use_subq and body.get("subq", True)  # a request can turn SubQ off, never on without the server
         t0 = started if started is not None else time.monotonic()
-        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage, steps=steps, use_subq=bool(use_subq))
+        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage, use_subq=bool(use_subq), steps=steps)
         store.log_report(report, source=source, ms=int((time.monotonic() - t0) * 1000), llm=bool(use_llm))
         with self.lock:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
         self.publish(report)
-        if self.auto_page and report.owners:
-            if on_stage:
-                on_stage("page", "start", {})
-            try:
-                g = self.github_prs.get(report.pr_id)  # a real demo-repo PR: its BLOCK reply fails that check
-                gh = body.get("github") or ({"repo": self.github_repo, "number": g.number} if g else {})
-                out = self.page(report, body.get("pr_url", "") or (g.url if g else ""), gh, dedupe=True)
-            except Exception as e:  # noqa: BLE001 - a failed text must never fail the verdict
-                out = {"error": f"{type(e).__name__}: {e}"}
-            if on_stage:
-                on_stage("page", "done", out)
+        g = self.github_prs.get(pr.pr_id)
+        if g:  # a real demo-repo PR: the owner's BLOCK reply must reach that PR's check
+            body = {**body, "pr_url": body.get("pr_url") or g.url,
+                    "github": body.get("github") or {"repo": self.github_repo, "number": g.number}}
+        self._auto_page(report, body, on_stage, auto_page)
         return report
 
     def teach(self, report: VerdictReport, sentence: str) -> str:
@@ -167,7 +187,7 @@ class State:
         return "Forgot: " + "; ".join(f'{e["test_name"]} ("{e["sentence"]}")' for e in gone)
 
     def page(self, r: VerdictReport, pr_url: str = "", github: dict | None = None, dedupe: bool = False) -> dict:
-        """Text owners[0] the verdict (full page, or one-line FYI on PASS) and open the reply thread."""
+        """Text owners[0] the verdict (full page, or one-line FYI on PASS); BLOCK/REVIEW also open the reply thread."""
         text = format_message(r, pr_url)
         out = {"to": r.owners[0].name if r.owners else None, "text": text, "sent": None}
         if not r.owners:
@@ -176,23 +196,38 @@ class State:
         if not phone:
             return {**out, "error": f"no phone on file for {r.owners[0].email}"}
         key = (r.pr_id, r.run_hash)
-        if dedupe and key in self._paged:
-            # Already texted (e.g. auto-paged right after the run). Still attach what the caller knows,
-            # such as the GitHub PR, so the owner's BLOCK reaches that PR's check.
-            thread = self.threads.setdefault(imessage.phone_key(phone), {"pr_id": r.pr_id, "pr_url": "", "github": {}})
-            if thread.get("pr_id") == r.pr_id:
-                thread["pr_url"] = pr_url or thread.get("pr_url", "")
-                thread["github"] = github or thread.get("github") or {}
-            return {**out, "skipped": "already paged for this exact result", "sent": "already sent"}
-        out["sent"] = self.notifier.send(phone, text)
-        self._paged.add(key)
-        self.threads[imessage.phone_key(phone)] = {"pr_id": r.pr_id, "pr_url": pr_url, "github": github or {}}
+        with self.lock:  # check+add as one step: two verifies of one result must never both page
+            if dedupe and key in self._paged:
+                if (pr_url or github) and r.verdict != "PASS":  # a later caller may know the GitHub PR
+                    self._open_thread(phone, r.pr_id, pr_url, github or {})
+                return {**out, "skipped": "already paged for this exact result", "sent": "already sent"}
+            self._paged[key] = None
+            if len(self._paged) > 500:
+                del self._paged[next(iter(self._paged))]
+            if r.verdict != "PASS":  # an FYI needs no reply; the owner's pending thread stays on the PR that does
+                self._open_thread(phone, r.pr_id, pr_url, github or {})
+        try:
+            out["sent"] = self.notifier.send(phone, text)
+        except Exception:
+            with self.lock:
+                self._paged.pop(key, None)  # not paged after all: the next identical verdict may try again
+            raise
         return out
 
+    def _open_thread(self, phone: str, pr_id: str, pr_url: str, github: dict) -> None:
+        """Where this number's next reply lands. Re-paging the same PR keeps its pr_url/github unless new ones are given,
+        so a BLOCK texted about PR A never lands on PR B or loses the GitHub link it needs."""
+        key = imessage.phone_key(phone)
+        old = self.threads.get(key) or {}
+        if old.get("pr_id") == pr_id:
+            pr_url, github = pr_url or old.get("pr_url", ""), github or old.get("github") or {}
+        self.threads[key] = {"pr_id": pr_id, "pr_url": pr_url, "github": github}
+
     def report(self, pr_id: str) -> VerdictReport:
+        """The cached verdict, or a lazy verify that never texts anyone: only /api/verify and /api/run page."""
         r = self.reports.get(pr_id)
         if r is None:
-            r = self.verify({"pr_id": pr_id})
+            r = self.verify({"pr_id": pr_id}, auto_page=False)
         return r
 
 
@@ -204,19 +239,55 @@ ALLOWED_ORIGINS = {
 } | {o.strip() for o in os.environ.get("MERGE_GATE_ORIGINS", "").split(",") if o.strip()}
 
 
-def _teach_or_forget(state: State, phone: str, r: VerdictReport, note: str, kind: str) -> None:
-    """A verified owner's TEACH or FORGET from the webhook; texts the outcome back."""
-    if kind == "teach":  # Muse + two sandbox runs: answer the webhook now, text the outcome after
+def _text_later(state: State, phone: str, text: str, r: VerdictReport) -> None:
+    """A text from a background thread (Sendblue already has its 200): a failure is logged AND written to the run log
+    as reply_send_failed, so a lost confirmation shows up in /api/log instead of vanishing."""
+    try:
+        state.notifier.send(phone, text)
+    except Exception as e:  # noqa: BLE001 - never lose the reply silently
+        logger.exception("text to the owner of %s failed", r.pr_id)
+        store.append("reply_send_failed", {"pr_id": r.pr_id, "owner": r.owners[0].name if r.owners else None,
+                                           "text": text, "error": f"{type(e).__name__}: {e}"})
+
+
+def _teach_or_forget(state: State, phone: str, r: VerdictReport, note: str, action: Action) -> None:
+    """A verified owner's TEACH or FORGET from the webhook. The plain outcome text IS the reply: never worded by
+    converse(), so what the owner reads is exactly what the gate stored or removed."""
+    if action.kind == "teach":  # Muse + two sandbox runs: ack now, answer the webhook, text the outcome after
+        state.notifier.send(phone, action.text)
+
         def teach() -> None:
             try:
                 text = state.teach(r, note)
             except Exception as e:  # noqa: BLE001 - tell the owner instead of dying silently in a thread
                 text = f"Couldn't learn that: {e}"
-            state.notifier.send(phone, text)
+            _text_later(state, phone, text, r)
 
         threading.Thread(target=teach, daemon=True).start()
-    if kind == "forget":
+    if action.kind == "forget":
         state.notifier.send(phone, state.forget(r, note))
+
+
+def _scan_github(state: State, body: dict) -> tuple[int, dict]:
+    """POST /api/github: resolve + clone a live public GitHub PR and register it as a gate PR (then /api/run it)."""
+    from . import github_pr
+
+    query = (body.get("query") or "").strip()
+    if not query:
+        return 400, {"error": "query required: a repo name (requests), owner/repo, owner/repo#N or a PR URL"}
+    try:
+        resolved = github_pr.resolve(query)
+        pr = github_pr.materialize(resolved, timeout_s=600)  # big repos: vllm needs > 3 min on venue Wi-Fi
+    except Exception as e:  # noqa: BLE001 - the UI shows the reason verbatim
+        return 400, {"error": f"{type(e).__name__}: {e}"}
+    with state.lock:
+        state.prs[pr.pr_id] = pr
+        state.reports.pop(pr.pr_id, None)
+    return 200, {
+        "pr_id": pr.pr_id, "title": pr.title, "issue_text": pr.issue_text, "opened_by": pr.opened_by,
+        "files": pr.changed_files(), "diff": pr.diff()[:200_000], "url": resolved.html_url,
+        "repo": resolved.full_name, "number": resolved.number,
+    }
 
 
 def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
@@ -347,21 +418,18 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
                 github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
                 blocked = True
-            if action.kind == "teach" and action.text:
-                state.notifier.send(inbound.phone, action.text)  # ack now; the outcome follows
-            _teach_or_forget(state, inbound.phone, r, reply.note, action.kind)
+            _teach_or_forget(state, inbound.phone, r, reply.note, action)
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
 
             def answer() -> None:  # Muse can take seconds; Sendblue gets its 200 now, the owner gets the text after
-                if action.kind in ("teach", "forget"):
-                    return  # _teach_or_forget texts that outcome itself; one reply per message
-                try:
-                    state.notifier.send(inbound.phone, imessage.converse(r, reply.raw, action, thread["pr_url"]))
-                except Exception as e:  # noqa: BLE001 - never lose the reply silently
-                    print(f"[merge-gate] reply to owner failed: {type(e).__name__}: {e}", flush=True)
+                _text_later(state, inbound.phone, imessage.converse(r, reply.raw, action, thread["pr_url"]), r)
 
-            threading.Thread(target=answer, daemon=True).start()
+            if action.kind not in ("teach", "forget"):  # those already texted their plain outcome above
+                threading.Thread(target=answer, daemon=True).start()
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
+
+        def _github(self, body: dict) -> None:
+            return self._send(*_scan_github(state, body))
 
         def do_POST(self) -> None:
             if not self._origin_ok():
@@ -370,6 +438,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 body = self._body()
                 if self.path == "/api/verify":
                     return self._send(200, state.verify(body).to_dict())
+                if self.path == "/api/github":
+                    return self._github(body)
                 if self.path == "/api/message":
                     r = state.report(body["pr_id"])
                     text = format_message(r, body.get("pr_url", ""))

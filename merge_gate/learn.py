@@ -6,6 +6,7 @@ Proposals come from evidence, never from a model:
   - a bad train-split PR got through      -> propose upgrading/enabling the rules that saw it
 Each proposal is scored on the HELD-OUT split only. It is adopted when held-out catch rate does not
 drop, false-block rate does not rise, and at least one of them improves. Otherwise it is rolled back.
+A proposal that would newly block a clean TRAIN PR (a label the learner already has) is vetoed outright.
 Every proposal, score and decision goes into gate_versions/ and the hash-chained run log.
 
 Raw evidence per case is computed once; scoring a configuration only re-runs decide(), so a learning
@@ -117,9 +118,10 @@ def propose(
         if not r:
             continue
         for e in r.evidence:
-            rule = e.id.split("::")[0] if e.type == "rule" else e.id
-            if e.type == "rule":
-                add(rule, _bump(e.severity, up=False), f"owner marked {pr_id} FALSE ALARM; {rule} {e.severity} -> {_bump(e.severity, up=False)}")
+            if e.id.startswith("owner::"):  # an owner's own rule is never downgraded by learning
+                continue
+            k = knob(e)
+            add(k, _bump(e.severity, up=False), f"owner marked {pr_id} FALSE ALARM; {k} {e.severity} -> {_bump(e.severity, up=False)}")
 
     for c in train:
         r = current.get(c.pr.pr_id)
@@ -179,13 +181,15 @@ def learn_round(
     train = [c for c in cases if c.label.split == "train"]
     held = [c for c in cases if c.label.split == "heldout"]
     base_scores = score(held, rescore(raw, cfg))
+    base_train_fb = score(train, rescore(raw, cfg))["false_block_rate"]
 
     decisions = []
     best: tuple[GateConfig, dict] | None = None
     for cand in propose(cfg, raw, train, false_alarms):
         s = score(held, rescore(raw, cand))
-        ok = _better(s, best[1] if best else base_scores)
-        decisions.append({"change": cand.change, "heldout": s, "adopted_so_far": ok})
+        train_fb = score(train, rescore(raw, cand))["false_block_rate"]  # veto: never add a false block on a labelled clean train PR
+        ok = _better(s, best[1] if best else base_scores) and train_fb <= base_train_fb
+        decisions.append({"change": cand.change, "heldout": s, "train_false_block_rate": train_fb, "adopted_so_far": ok})
         if ok:
             best = (cand, s)
 

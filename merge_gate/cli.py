@@ -99,6 +99,73 @@ def _cmd_owner_tests(args: argparse.Namespace) -> int:
     return 0 if gone else 1
 
 
+def _bench_baseline(args: argparse.Namespace, cases: list) -> int:
+    """bench --baseline: score a baseline on the cases. The llm baseline needs Muse Spark; a case with no report fails the run."""
+    from .baselines import METRICS, run as run_baseline
+    from .bench import score
+
+    if args.baseline == "llm" and (args.stub or not _use_llm(args)):
+        print("bench --baseline llm needs Muse Spark: it is off (--no-llm, --stub or no MUSE_API_KEY)", file=sys.stderr)
+        return 1
+    reports = run_baseline(args.baseline, cases)
+    s = score(cases, reports)
+    keep = ("cases", "bad", "clean", *METRICS[args.baseline], "missing_reports")
+    print(json.dumps({"baseline": args.baseline, **{k: s[k] for k in keep}}, indent=2))
+    if s["missing_reports"]:
+        missing = sorted(c.pr.pr_id for c in cases if c.pr.pr_id not in reports)
+        print(f"{s['missing_reports']} of {len(cases)} cases got no {args.baseline} report (call failed or unparseable): {', '.join(missing)}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_github(args: argparse.Namespace) -> int:
+    """Resolve a live GitHub PR, clone it and run the gate; progress on stderr, verdict JSON on stdout."""
+    from .github_pr import scan
+
+    def progress(name, status, data):
+        extra = (f" {data['ms']}ms" if "ms" in data else "") + (f" {data['url']}" if "url" in data else "")
+        print(f"[merge-gate] {name} {status}{extra}", file=sys.stderr)
+
+    report, pr, resolved = scan(args.query, use_llm=_use_llm(args), use_subq=_use_subq(args), on_stage=progress)
+    print(f"[merge-gate] {resolved.html_url} -> {pr.pr_id} (clone: {pr.repo_path})", file=sys.stderr)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(report.to_json())
+    print(report.to_json())
+    return 0
+
+
+
+def _cmd_log(args) -> int:
+    """`merge-gate log` (moved out of main() so each subcommand stays small)."""
+    from . import store
+
+    ok, bad = store.verify_chain()
+    for rec in store.read()[-args.tail:]:
+        d = rec["data"]
+        what = f"{d.get('pr_id')} {d.get('verdict') or d.get('command')}" + (f" -> {d['action']}" if "action" in d else "")
+        print(f"{rec['at']} {rec['kind']:<8} {what}")
+    print(f"hash chain: {'OK' if ok else f'BROKEN at record {bad}'}")
+    return 0 if ok else 1
+
+
+def _cmd_learn(args) -> int:
+    """`merge-gate learn` (moved out of main() so each subcommand stays small)."""
+    from .bench import load_cases
+    from .learn import collect_raw, false_alarms_from_log, learn_round
+
+    cases = load_cases(args.root)
+    if not cases:
+        print(f"no cases under {args.root}/cases", file=sys.stderr)
+        return 1
+    raw = collect_raw(cases, use_llm=_use_llm(args))
+    result = learn_round(cases, raw, false_alarms_from_log())
+    print(json.dumps({k: v for k, v in result.items() if k != "candidates"}, indent=2))
+    for c in result["candidates"]:
+        print(f"  {'KEEP' if c['adopted_so_far'] else 'roll back'}: {c['change']}  held-out {c['heldout']['catch_rate']:.2f} catch / {c['heldout']['false_block_rate']:.2f} false-block")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="merge-gate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -109,6 +176,11 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--case", help="benchmark case directory")
     v.add_argument("--stub", action="store_true", help="return a fixed BLOCK report")
     _llm_flags(v)
+
+    gh = sub.add_parser("github", help="verify a live GitHub PR: owner/repo#N, owner/repo (newest open PR) or a repo name to search")
+    gh.add_argument("query")
+    gh.add_argument("--out", default=None, help="also write the report JSON here")
+    _llm_flags(gh)
 
     d = sub.add_parser("demo", help="build the demo repo in a temp dir and run the gate on its PRs")
     _llm_flags(d)
@@ -180,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
         print(verify(load_case(args.case).pr, use_llm=_use_llm(args), use_subq=_use_subq(args)).to_json())
         return 0
 
+    if args.cmd == "github":
+        return _cmd_github(args)
+
     if args.cmd == "validate":
         with open(args.path, encoding="utf-8") as f:
             data = json.load(f)
@@ -211,9 +286,15 @@ def main(argv: list[str] | None = None) -> int:
                        repo_path=args.repo)
 
     if args.cmd == "rollback":
+        import logging
+
         from .rollback import main as rollback_main
 
-        return rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github, args.base, args.respect_override)
+        logging.basicConfig(format="[merge-gate] %(levelname)s: %(message)s")  # rollback's warnings -> stderr
+        code, out, err = rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github, args.base, args.respect_override)
+        sys.stdout.write(out)
+        print(err, file=sys.stderr)
+        return code
 
     if args.cmd == "serve":
         from .serve import serve
@@ -222,15 +303,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "log":
-        from . import store
+        return _cmd_log(args)
 
-        ok, bad = store.verify_chain()
-        for rec in store.read()[-args.tail:]:
-            d = rec["data"]
-            what = f"{d.get('pr_id')} {d.get('verdict') or d.get('command')}" + (f" -> {d['action']}" if "action" in d else "")
-            print(f"{rec['at']} {rec['kind']:<8} {what}")
-        print(f"hash chain: {'OK' if ok else f'BROKEN at record {bad}'}")
-        return 0 if ok else 1
 
     if args.cmd == "demo":
         import tempfile
@@ -254,19 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "learn":
-        from .bench import load_cases
-        from .learn import collect_raw, false_alarms_from_log, learn_round
+        return _cmd_learn(args)
 
-        cases = load_cases(args.root)
-        if not cases:
-            print(f"no cases under {args.root}/cases", file=sys.stderr)
-            return 1
-        raw = collect_raw(cases, use_llm=_use_llm(args))
-        result = learn_round(cases, raw, false_alarms_from_log())
-        print(json.dumps({k: v for k, v in result.items() if k != "candidates"}, indent=2))
-        for c in result["candidates"]:
-            print(f"  {'KEEP' if c['adopted_so_far'] else 'roll back'}: {c['change']}  held-out {c['heldout']['catch_rate']:.2f} catch / {c['heldout']['false_block_rate']:.2f} false-block")
-        return 0
 
     if args.cmd == "bench":
         from .bench import load_cases, score
@@ -277,12 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no cases under {args.root}/cases", file=sys.stderr)
             return 1
         if args.baseline:
-            from .baselines import METRICS, run as run_baseline
-
-            s = score(cases, run_baseline(args.baseline, cases))
-            keep = ("cases", "bad", "clean", *METRICS[args.baseline], "missing_reports")
-            print(json.dumps({"baseline": args.baseline, **{k: s[k] for k in keep}}, indent=2))
-            return 0
+            return _bench_baseline(args, cases)
 
         from concurrent.futures import ThreadPoolExecutor
 

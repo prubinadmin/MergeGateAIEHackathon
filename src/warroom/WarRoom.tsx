@@ -4,7 +4,7 @@ import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
   API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode, getReplies, githubFor, prUrl,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode, getReplies, githubFor, prUrl, scanGithub,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -146,6 +146,7 @@ export default function WarRoom() {
   const [showDiff, setShowDiff] = useState(false);
   const [showWhy, setShowWhy] = useState(true);
   const [replyBusy, setReplyBusy] = useState(false);
+  const [gh, setGh] = useState({ query: '', busy: false, note: '' });
   const [paging, setPaging] = useState<Record<string, { status: 'sending' | 'sent' | 'error'; note: string }>>({});
 
   const cancelRun = useRef<(() => void) | null>(null);
@@ -260,6 +261,21 @@ export default function WarRoom() {
     const h = setInterval(tick, 2500);
     return () => clearInterval(h);
   }, [recorded, refreshStats]);
+  // agentic: scan a live public GitHub PR, register it, then run the gate on it without another click
+  const scan = async () => {
+    const q = gh.query.trim();
+    if (!q || gh.busy || running) return;
+    setGh((g) => ({ ...g, busy: true, note: `Finding and cloning ${q}… (big repos take a few minutes)` }));
+    try {
+      const d = await scanGithub(q);
+      setPrs((all) => [...all.filter((p) => p.pr_id !== d.pr_id), d]);
+      setGh({ query: '', busy: false, note: `Scanning ${d.repo}#${d.number}: ${d.title}` });
+      setSel(d.pr_id);
+      run(d.pr_id);
+    } catch (e) {
+      setGh((g) => ({ ...g, busy: false, note: (e as Error).message }));
+    }
+  };
 
   const pr = prs.find((p) => p.pr_id === sel);
   const c = cases[sel] || EMPTY;
@@ -308,6 +324,17 @@ export default function WarRoom() {
               </button>
             );
           })}
+          <form onSubmit={(e) => { e.preventDefault(); scan(); }} className="flex items-center gap-2">
+            <input value={gh.query} onChange={(e) => setGh((g) => ({ ...g, query: e.target.value }))} disabled={recorded || gh.busy}
+              placeholder="Scan a live GitHub PR: requests · owner/repo · owner/repo#42 · PR URL"
+              aria-label="Scan a live GitHub pull request"
+              className="w-[340px] rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-[12.5px] text-zinc-100 placeholder:text-zinc-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:opacity-40" />
+            <button type="submit" disabled={recorded || gh.busy || !gh.query.trim() || !!running}
+              className="flex items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-[12.5px] font-semibold text-amber-200 transition-colors duration-150 hover:bg-amber-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-35">
+              {gh.busy ? <Loader2 size={13} className="animate-spin" /> : <GitPullRequest size={13} />} Scan
+            </button>
+            {gh.note && <span role="status" className="max-w-[320px] truncate text-[11.5px] text-zinc-400" title={gh.note}>{gh.note}</span>}
+          </form>
           <div className="ml-auto flex items-center gap-4">
             <label title={recorded ? 'Recorded with Muse Spark on' : undefined} className="flex items-center gap-2 text-[12px] text-zinc-400 font-mono">
               <input type="checkbox" checked={useLlm} disabled={!llm || recorded} onChange={(e) => setUseLlm(e.target.checked)} className="accent-amber-500" />
@@ -501,7 +528,7 @@ export default function WarRoom() {
                   : auto?.status === 'start' ? 'sending'
                   : auto?.status === 'done' ? (auto.sent ? 'sent' : auto.skipped ? 'skipped' : 'error') : null;
                 const note = manual ? manual.note
-                  : auto?.sent ? `Texted ${auto.to} automatically, ${r?.verdict === 'PASS' ? 'as an FYI' : 'with the evidence'}.`
+                  : auto?.sent ? `Texted ${auto.to} automatically, ${String(auto.text || '').startsWith('FYI') ? 'as an FYI' : 'with the evidence'}.`
                   : auto?.skipped ? `${auto.to || 'Owner'} already has this exact result; not texting twice.`
                   : auto?.error ? `Couldn't text the owner: ${auto.error}` : '';
                 return (
@@ -511,16 +538,16 @@ export default function WarRoom() {
                       <div role="status" className="flex items-center gap-1.5 text-[12px] text-amber-200"><Loader2 size={13} className="animate-spin" /> Texting the code owner…</div>
                     )}
                     {!recorded && status && status !== 'sending' && (
-                      <div role="status" className={`flex items-start gap-1.5 text-[12px] ${status === 'error' ? 'text-red-300' : 'text-emerald-300'}`}>
+                      <div role="status" className={`flex items-start gap-1.5 text-[12px] ${status === 'error' ? 'text-red-300' : status === 'skipped' ? 'text-zinc-400' : 'text-emerald-300'}`}>
                         {status === 'error' ? <Lock size={13} className="mt-0.5 shrink-0" /> : <Smartphone size={13} className="mt-0.5 shrink-0" />}
                         {note}
                       </div>
                     )}
                     {!recorded && !r && <div className="text-[11.5px] text-zinc-500">The gate texts the code owner itself the moment it decides.</div>}
-                    {!recorded && r && status && status !== 'sending' && (
+                    {!recorded && r && status !== 'sending' && (
                       <button onClick={() => page(sel)}
                         className="mt-2 flex items-center gap-1.5 text-[11.5px] text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400">
-                        <Send size={12} /> Text {r.owners[0]?.name || 'the owner'} again
+                        <Send size={12} /> Text {r.owners[0]?.name || 'the owner'}{status ? ' again' : ''}
                       </button>
                     )}
                   </>

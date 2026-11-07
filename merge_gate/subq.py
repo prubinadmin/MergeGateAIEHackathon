@@ -12,20 +12,21 @@ Docs: https://docs.subq.ai/markdown/endpoints/decisions-api.md
 - POST https://api.subq.ai/v1/systemone, header "Authorization: Bearer <SUBQ_API_KEY>"
 - body {"model", "state", "questions": {name: {"type": "choice"|"score"|"noul", "instructions", "criteria"}}}
 - choice answer {"choice", "probabilities", "confidence"}; score answer {"score", "legend", "probabilities", "confidence"}
-- retry 429 and 5xx with backoff, fix 400/422 instead of retrying
+- retry 429 and 5xx (once, immediately: the whole call has a 25s budget), fix 400/422 instead of retrying
 """
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import os
-import random
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 
 from .llm import load_dotenv
 from .owners import eligible
@@ -49,21 +50,55 @@ class SubQError(RuntimeError):
     pass
 
 
+class _Retryable(SubQError):
+    """429, 5xx or a network error: worth one more attempt inside the budget."""
+
+
 def has_key() -> bool:
     load_dotenv()
     return bool(os.environ.get("SUBQ_API_KEY"))
 
 
+def _request(state, questions: dict) -> tuple[str, dict, bytes]:
+    """(url, body, canonical JSON bytes); the bytes are also the cache key."""
+    base = (os.environ.get("SUBQ_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+    body = {"model": os.environ.get("SUBQ_MODEL") or DEFAULT_MODEL, "state": state, "questions": questions}
+    return f"{base}/systemone", body, json.dumps(body, sort_keys=True).encode("utf-8")
+
+
+def _parse_answers(raw: bytes) -> dict:
+    return json.loads(raw.decode("utf-8"))["answers"]
+
+
+def _post_once(url: str, key: str, data: bytes, timeout_s: float) -> dict:
+    """One POST. 400-class errors are our bug (SubQError, not retried); 429, 5xx and network errors are _Retryable."""
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "merge-gate/0.1"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return _parse_answers(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        if e.code != 429 and e.code < 500:
+            raise SubQError(f"HTTP {e.code}: {detail}") from None
+        raise _Retryable(f"HTTP {e.code}: {detail}") from None
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        raise _Retryable(str(e)) from e
+
+
 def decide(state, questions: dict, *, timeout_s: float = REQUEST_TIMEOUT_S, retries: int = 1,
            budget_s: float = BUDGET_S, use_cache: bool = True) -> dict:
-    """One Decisions API call; returns the "answers" object. Cached on disk by request hash (replayable)."""
+    """One Decisions API call; returns the "answers" object. Cached on disk by request hash (replayable).
+    Retryable failures are retried immediately: no backoff sleep, the whole call fits the budget."""
     load_dotenv()
     key = os.environ.get("SUBQ_API_KEY", "")
     if not key:
         raise SubQError("SUBQ_API_KEY is not set")
-    base = (os.environ.get("SUBQ_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-    body = {"model": os.environ.get("SUBQ_MODEL") or DEFAULT_MODEL, "state": state, "questions": questions}
-    data = json.dumps(body, sort_keys=True).encode("utf-8")
+    url, body, data = _request(state, questions)
     cache_path = os.path.join(CACHE_DIR, hashlib.sha256(data).hexdigest() + ".json")
     # in CI the cwd is the PR's checkout, where an attacker could commit a forged .cache/subq answer
     use_cache = use_cache and not os.environ.get("CI")
@@ -73,55 +108,45 @@ def decide(state, questions: dict, *, timeout_s: float = REQUEST_TIMEOUT_S, retr
 
     deadline = time.monotonic() + budget_s
     last_err: Exception | None = None
-    for attempt in range(retries + 1):
+    for _ in range(retries + 1):
         remaining = deadline - time.monotonic()
         if remaining <= 0.5:
             break
-        req = urllib.request.Request(
-            f"{base}/systemone",
-            data=data,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "merge-gate/0.1"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(req, timeout=min(timeout_s, remaining)) as resp:
-                answers = json.loads(resp.read().decode("utf-8"))["answers"]
-            if use_cache:
-                os.makedirs(CACHE_DIR, exist_ok=True)
-                with open(cache_path, "w", encoding="utf-8") as f:
-                    json.dump({"answers": answers, "model": body["model"]}, f)
-            return answers
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:300]
-            if e.code != 429 and e.code < 500:
-                raise SubQError(f"HTTP {e.code}: {detail}") from None
-            last_err = SubQError(f"HTTP {e.code}: {detail}")
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            answers = _post_once(url, key, data, min(timeout_s, remaining))
+        except _Retryable as e:
             last_err = e
-        if attempt < retries:
-            time.sleep(max(0.0, min(1 + random.random(), deadline - time.monotonic() - 1)))
+            continue
+        if use_cache:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({"answers": answers, "model": body["model"]}, f)
+        return answers
     raise SubQError(f"SubQ call failed within {budget_s}s ({retries + 1} attempts max): {last_err}")
 
 
-def _history(pr: PullRequest) -> str:
-    """git log -p of every base-side line range the PR touches, newest first, bounded."""
+def _file_history(pr: PullRequest, path: str) -> Iterator[str]:
+    """One git log -L chunk per base-side line range of path that the PR touches, newest first."""
     from .owners import _base_ranges
 
+    for a, b in _base_ranges(pr, path):
+        try:
+            out = pr.git("log", "--format=commit %h  %an <%ae>  %ad  %s", "--date=short", "-L", f"{a},{b}:{path}", pr.base_ref)
+        except subprocess.CalledProcessError:
+            continue
+        yield f"=== {path} lines {a}-{b} ===\n{out}"
+
+
+def _history(pr: PullRequest) -> str:
+    """git log -p of every base-side line range the PR touches, newest first, bounded to HISTORY_CHARS."""
+    in_base = (p for p in pr.changed_files() if pr.file_at(pr.base_ref, p) is not None)
     parts: list[str] = []
     size = 0
-    for path in pr.changed_files():
-        if pr.file_at(pr.base_ref, path) is None:
-            continue
-        for a, b in _base_ranges(pr, path):
-            try:
-                out = pr.git("log", "--format=commit %h  %an <%ae>  %ad  %s", "--date=short", "-L", f"{a},{b}:{path}", pr.base_ref)
-            except subprocess.CalledProcessError:
-                continue
-            chunk = f"=== {path} lines {a}-{b} ===\n{out}"
-            parts.append(chunk[: HISTORY_CHARS - size])
-            size += len(parts[-1])
-            if size >= HISTORY_CHARS:
-                return "\n".join(parts)
+    for chunk in itertools.chain.from_iterable(_file_history(pr, p) for p in in_base):
+        parts.append(chunk[: HISTORY_CHARS - size])
+        size += len(parts[-1])
+        if size >= HISTORY_CHARS:
+            break
     return "\n".join(parts)
 
 

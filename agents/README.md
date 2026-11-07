@@ -96,13 +96,13 @@ export MERGE_GATE_AGENT_SEED="$(python -c 'import secrets; print(secrets.token_u
 python -m agents.merge_gate_agent    # from the repo root
 ```
 
-It prints the specialists, then the orchestrator's address and inspector link:
+It logs the specialists, then the orchestrator's address and inspector link:
 
 ```
-[merge-gate] specialist merge-gate-rules: agent1q...
+INFO:merge_gate.agent:specialist merge-gate-rules: agent1q...
 ...
-[merge-gate] orchestrator (ASI:One-facing): agent1q...
-[merge-gate] Agent inspector: https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8001&address=agent1q...
+INFO:merge_gate.agent:orchestrator (ASI:One-facing): agent1q...
+INFO:merge_gate.agent:Agent inspector: https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8001&address=agent1q...
 INFO: [merge-gate]: Manifest published successfully: AgentChatProtocol
 WARNING: [merge-gate]: Agent mailbox not found: create one using the agent inspector
 ```
@@ -147,7 +147,7 @@ The agent must be running whenever someone chats with it. The mailbox holds mess
 ## Tests
 
 ```bash
-pytest tests/test_fetch_agent.py
+pytest tests/test_merge_gate_agent.py tests/test_team.py
 ```
 
 The tests cover:
