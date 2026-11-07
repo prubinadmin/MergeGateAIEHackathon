@@ -170,7 +170,10 @@ export default function App() {
   };
 
   const handleCustomPrSubmit = (customPr: PullRequest) => {
-    setScenarios(prev => [customPr, ...prev]);
+    setScenarios(prev => {
+      const filtered = prev.filter(item => item.id !== customPr.id);
+      return [customPr, ...filtered];
+    });
     setSelectedPr(customPr);
   };
 
@@ -185,12 +188,13 @@ export default function App() {
         currentVerdict={gateResult?.verdict}
       />
 
-      {/* Demo Scenario Selector Bar */}
+      {/* Demo Scenario Selector & Live GitHub Link Analyzer Bar */}
       <ScenarioBar
         scenarios={scenarios}
         selectedPr={selectedPr}
         onSelectPr={(pr) => setSelectedPr(pr)}
         onOpenCustomModal={() => setIsCustomModalOpen(true)}
+        onGitHubPrAnalyzed={handleCustomPrSubmit}
       />
 
       {/* Main Content Area */}

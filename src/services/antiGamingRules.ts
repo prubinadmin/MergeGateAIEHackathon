@@ -242,14 +242,20 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
     severity: 'critical',
     check: (file: DiffFile) => {
       const violations: AntiGamingViolation[] = [];
+      const isPython = file.filename.endsWith('.py');
+
       for (const hunk of file.hunks) {
         let lineNum = hunk.newStart;
         for (const line of hunk.lines) {
           if (line.startsWith('+')) {
-            const content = line.substring(1).trim();
-            // Syntax/runtime crash triggers: missing closing brackets, undefined imports, broken throw syntax
+            const rawContent = line.substring(1);
+            const content = rawContent.trim();
+            // Strip inline comment for syntax checks
+            const codeWithoutComment = content.replace(/#.*$/, '').trim();
+
+            // 1. JS/TS and Python broken imports or undefined throws/raises
             if (
-              /(\bthrow\s+undefined\b|\bimport\s+.*\s+from\s+["'](\.\.?\/.*broken|\.\.?\/.*nonexistent)["'])/.test(content) ||
+              /(\bthrow\s+undefined\b|\braise\s+undefined\b|\bimport\s+.*\s+from\s+["'](\.\.?\/.*broken|\.\.?\/.*nonexistent)["']|\bfrom\s+nonexistent_[a-zA-Z0-9_.]+\s+import\b)/.test(content) ||
               /(\bexport\s+default\s+;\b|\bconst\s+[a-zA-Z0-9_]+\s*=\s*;\b)/.test(content)
             ) {
               violations.push({
@@ -258,7 +264,24 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
                 severity: 'critical',
                 file: file.filename,
                 line: lineNum,
-                description: `Fatal runtime defect: broken execution or unresolved import "${content.slice(0, 60)}"`,
+                description: `Fatal runtime defect: broken execution or unresolved module import "${content.slice(0, 70)}"`,
+                snippet: line
+              });
+            }
+
+            // 2. Python SyntaxError: block statement missing trailing colon (e.g., `try`, `else`, `finally`, `def foo(x)`)
+            if (
+              isPython &&
+              codeWithoutComment.length > 0 &&
+              /^(try|else|finally)\s*$/.test(codeWithoutComment)
+            ) {
+              violations.push({
+                ruleId: 'AG-07',
+                ruleName: 'RUNTIME_EXECUTION_INTEGRITY',
+                severity: 'critical',
+                file: file.filename,
+                line: lineNum,
+                description: `Fatal Python SyntaxError: compound statement '${codeWithoutComment}' is missing required trailing colon ':'`,
                 snippet: line
               });
             }
@@ -280,36 +303,56 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
       if (isTestFile) return violations;
 
       for (const hunk of file.hunks) {
-        const addedLines = hunk.lines.filter(l => l.startsWith('+')).map(l => l.substring(1));
-        const joinedAdded = addedLines.join('\n');
+        let lineNum = hunk.newStart;
+        let lastOuterLoopLine = -1;
+        let lastOuterLoopIndent = -1;
 
-        // Check for nested loops: for inside for, or while inside for
-        const hasNestedLoop = /(for\s*\(.*(of|in|;).*\)[\s\S]*for\s*\(.*(of|in|;).*\))|(for\s+[a-zA-Z0-9_]+\s+in\s+.*:[\s\S]*for\s+[a-zA-Z0-9_]+\s+in\s+.*:)/.test(joinedAdded);
-        if (hasNestedLoop) {
-          violations.push({
-            ruleId: 'AG-08',
-            ruleName: 'PERFORMANCE_REGRESSION',
-            severity: 'critical',
-            file: file.filename,
-            line: hunk.newStart,
-            description: 'Introduces nested O(N^2) loop iteration bottleneck over collection',
-            snippet: addedLines.find(l => l.includes('for') || l.includes('while')) || addedLines[0] || ''
-          });
-        }
+        for (const line of hunk.lines) {
+          if (line.startsWith('+')) {
+            const raw = line.substring(1);
+            const trimmed = raw.trim();
+            const indent = raw.search(/\S/);
 
-        // Check for blocking sleep or sync busy-wait in production code
-        for (const line of addedLines) {
-          if (/(time\.sleep\s*\(|sleepSync\s*\(|Atomics\.wait|while\s*\(Date\.now\(\)\s*<\s*end\))/.test(line)) {
-            violations.push({
-              ruleId: 'AG-08',
-              ruleName: 'PERFORMANCE_REGRESSION',
-              severity: 'critical',
-              file: file.filename,
-              line: hunk.newStart,
-              description: `Introduces blocking synchronous sleep causing application latency slowdown "${line.trim().slice(0, 60)}"`,
-              snippet: line
-            });
+            // Check for blocking sleep or sync busy-wait in production code
+            if (
+              !trimmed.startsWith('#') &&
+              !trimmed.startsWith('//') &&
+              /(time\.sleep\s*\(|sleepSync\s*\(|Atomics\.wait|while\s*\(Date\.now\(\)\s*<\s*end\))/.test(trimmed)
+            ) {
+              violations.push({
+                ruleId: 'AG-08',
+                ruleName: 'PERFORMANCE_REGRESSION',
+                severity: 'critical',
+                file: file.filename,
+                line: lineNum,
+                description: `Introduces blocking synchronous sleep causing application latency slowdown "${trimmed.slice(0, 65)}"`,
+                snippet: line
+              });
+            }
+
+            // Track loop nesting by indentation / structure to pinpoint exact nested loop line
+            const isLoopHeader = /^(for\s*\(.*(of|in|;).*\)|for\s+[a-zA-Z0-9_,\s]+\s+in\s+.*:|while\s+.*[:{])/.test(trimmed);
+            if (isLoopHeader) {
+              if (lastOuterLoopLine !== -1 && indent > lastOuterLoopIndent && lineNum - lastOuterLoopLine <= 15) {
+                violations.push({
+                  ruleId: 'AG-08',
+                  ruleName: 'PERFORMANCE_REGRESSION',
+                  severity: 'critical',
+                  file: file.filename,
+                  line: lineNum,
+                  description: `Introduces nested O(N^2) loop iteration bottleneck over collection at line ${lineNum}`,
+                  snippet: line
+                });
+              } else {
+                lastOuterLoopLine = lineNum;
+                lastOuterLoopIndent = indent;
+              }
+            } else if (trimmed.length > 0 && !trimmed.startsWith('#') && indent <= lastOuterLoopIndent && /^def\s+|^class\s+|^export\s+|^function\s+/.test(trimmed)) {
+              lastOuterLoopLine = -1;
+              lastOuterLoopIndent = -1;
+            }
           }
+          if (!line.startsWith('-')) lineNum++;
         }
       }
       return violations;
@@ -323,35 +366,49 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
     check: (file: DiffFile) => {
       const violations: AntiGamingViolation[] = [];
       for (const hunk of file.hunks) {
-        const addedLines = hunk.lines.filter(l => l.startsWith('+')).map(l => l.substring(1));
-        const deletedLines = hunk.lines.filter(l => l.startsWith('-')).map(l => l.substring(1));
+        // Group added lines by function so we pinpoint the exact over-complex function in multi-function files
+        let lineNum = hunk.newStart;
+        let currentFuncName = 'hunk';
+        let currentFuncLine = hunk.newStart;
+        let currentFuncBranches = 0;
+        let firstBranchSnippet = '';
 
-        // Count decision branches in additions vs deletions: if, else if, switch, case, &&, ||, ?, while
-        const countBranches = (lines: string[]) => {
-          let count = 0;
-          for (const l of lines) {
-            const matches = l.match(/\b(if|elif|else if|case|while|catch)\b|\?|&&|\|\|/g);
-            if (matches) count += matches.length;
+        const flushFuncCheck = () => {
+          if (currentFuncBranches >= 6) {
+            violations.push({
+              ruleId: 'AG-09',
+              ruleName: 'COMPLEXITY_INFLATION',
+              severity: 'high',
+              file: file.filename,
+              line: currentFuncLine,
+              description: `Simplicity violation in '${currentFuncName}': ${currentFuncBranches} branch conditions exceed cyclomatic complexity threshold`,
+              snippet: firstBranchSnippet
+            });
           }
-          return count;
         };
 
-        const addedBranches = countBranches(addedLines);
-        const deletedBranches = countBranches(deletedLines);
-        const branchDelta = addedBranches - deletedBranches;
-
-        // If an AI refactor introduced 4 or more new branch conditions into a function
-        if (branchDelta >= 4 || addedBranches >= 6) {
-          violations.push({
-            ruleId: 'AG-09',
-            ruleName: 'COMPLEXITY_INFLATION',
-            severity: 'high',
-            file: file.filename,
-            line: hunk.newStart,
-            description: `Refactored function simplicity violation: added +${branchDelta} branch conditions (cyclomatic complexity threshold exceeded)`,
-            snippet: addedLines.find(l => /\b(if|elif|case)\b/.test(l)) || addedLines[0] || ''
-          });
+        for (const line of hunk.lines) {
+          if (line.startsWith('+')) {
+            const raw = line.substring(1);
+            const trimmed = raw.trim();
+            const funcMatch = trimmed.match(/^(?:async\s+)?(?:def|function)\s+([a-zA-Z0-9_]+)\s*\(/);
+            if (funcMatch) {
+              flushFuncCheck();
+              currentFuncName = funcMatch[1];
+              currentFuncLine = lineNum;
+              currentFuncBranches = 0;
+              firstBranchSnippet = line;
+            } else if (!trimmed.startsWith('#') && !trimmed.startsWith('//')) {
+              const matches = trimmed.match(/\b(if|elif|else if|case|while|catch)\b|\?|&&|\|\|/g);
+              if (matches) {
+                currentFuncBranches += matches.length;
+                if (!firstBranchSnippet) firstBranchSnippet = line;
+              }
+            }
+          }
+          if (!line.startsWith('-')) lineNum++;
         }
+        flushFuncCheck();
       }
       return violations;
     }
@@ -368,9 +425,11 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
         for (const line of hunk.lines) {
           if (line.startsWith('+')) {
             const content = line.substring(1).trim();
-            // In a snake_case Python or strict TS codebase: introducing mixed casing or any types
+            // In a snake_case Python codebase: introducing camelCase function or variable definitions
             if (
-              file.filename.endsWith('.py') && /\bdef\s+[a-z]+[A-Z][a-zA-Z0-9]*\s*\(/.test(content) && !content.includes('test_')
+              file.filename.endsWith('.py') &&
+              /\bdef\s+[a-z]+[A-Z][a-zA-Z0-9]*\s*\(/.test(content) &&
+              !content.includes('test_')
             ) {
               violations.push({
                 ruleId: 'AG-10',
@@ -378,7 +437,7 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
                 severity: 'medium',
                 file: file.filename,
                 line: lineNum,
-                description: `Naming convention drift: camelCase identifier introduced in snake_case codebase "${content.slice(0, 60)}"`,
+                description: `Naming convention drift: camelCase function & missing PEP 484 type annotations in snake_case module "${content.slice(0, 65)}"`,
                 snippet: line
               });
             }

@@ -8,6 +8,7 @@
  */
 
 import { IndependentTestCase, PullRequest } from '../types/mergeGate';
+import { runAntiGamingChecks } from './antiGamingRules';
 
 // Helper to calculate a reproducible SHA-256 hash
 export async function computeRunHash(inputData: string): Promise<string> {
@@ -36,7 +37,7 @@ export async function computeRunHash(inputData: string): Promise<string> {
  */
 export function generateIndependentTests(pr: PullRequest): IndependentTestCase[] {
   // Scenario 1: Pricing tiered volume discounts
-  if (pr.id === 'PR-412' || pr.title.toLowerCase().includes('pricing') || pr.title.toLowerCase().includes('tier')) {
+  if (pr.id === 'PR-412') {
     return [
       {
         id: 'IT-101',
@@ -76,7 +77,7 @@ export function generateIndependentTests(pr: PullRequest): IndependentTestCase[]
   }
 
   // Scenario 2: Auth and session token verification
-  if (pr.id === 'PR-418' || pr.title.toLowerCase().includes('auth') || pr.title.toLowerCase().includes('session')) {
+  if (pr.id === 'PR-418') {
     return [
       {
         id: 'IT-201',
@@ -105,7 +106,7 @@ export function generateIndependentTests(pr: PullRequest): IndependentTestCase[]
   }
 
   // Scenario 3: Clean telemetry pipeline
-  if (pr.id === 'PR-421' || pr.title.toLowerCase().includes('telemetry') || pr.title.toLowerCase().includes('clean')) {
+  if (pr.id === 'PR-421') {
     return [
       {
         id: 'IT-301',
@@ -132,18 +133,64 @@ export function generateIndependentTests(pr: PullRequest): IndependentTestCase[]
     ];
   }
 
-  // Generic fallback for custom PRs
-  return [
+  // Dynamic Independent Verification Suite for Live GitHub URLs & Custom PRs
+  const violations = runAntiGamingChecks(pr.files, pr.issueDescription);
+  const firstPublicSig = pr.publicInterface.split('\n')[0] || 'moduleExport(payload)';
+  const runtimeDefect = violations.find(v => v.ruleId === 'AG-07');
+  const perfDefect = violations.find(v => v.ruleId === 'AG-08');
+  const complexityDefect = violations.find(v => v.ruleId === 'AG-09');
+  const styleOrRegDefect = violations.find(v => v.ruleId === 'AG-10' || v.ruleId === 'AG-11');
+
+  const dynamicTests: IndependentTestCase[] = [
     {
-      id: 'IT-901',
-      name: 'test_contract_public_interface',
-      targetFunction: 'publicExport(args)',
-      requirement: `Validate requirement from issue: "${pr.issueDescription.slice(0, 80)}"`,
-      input: '{ mode: "standard_eval" }',
-      expected: '{ status: "ok" }',
-      actual: '{ status: "ok" }',
-      passed: true,
-      durationMs: 16
+      id: 'IT-701',
+      name: 'test_runtime_import_and_ast_compile',
+      targetFunction: firstPublicSig,
+      requirement: 'Module must parse, compile AST, and execute public entrypoints without syntax or import crashes.',
+      input: '{ mode: "sandbox_import_check" }',
+      expected: '{ astValid: true, exitCode: 0 }',
+      actual: runtimeDefect
+        ? `{ astValid: false, error: "${runtimeDefect.description.slice(0, 60)}" }`
+        : '{ astValid: true, exitCode: 0 }',
+      passed: !runtimeDefect,
+      durationMs: runtimeDefect ? 6 : 12,
+      errorTrace: runtimeDefect
+        ? `${runtimeDefect.file}:${runtimeDefect.line} -> ${runtimeDefect.description} (${runtimeDefect.snippet.trim()})`
+        : undefined
+    },
+    {
+      id: 'IT-702',
+      name: 'test_latency_sla_and_scaling_bound',
+      targetFunction: firstPublicSig,
+      requirement: 'Execution must complete within <25ms SLA without synchronous sleep or O(N²) nested scans.',
+      input: '{ batchSize: 1000, slaBudgetMs: 25 }',
+      expected: '{ p99LatencyMs: 8.4, complexityOrder: "O(N)" }',
+      actual: perfDefect
+        ? '{ p99LatencyMs: 264.0, complexityOrder: "O(N^2) / blocking sleep" }'
+        : '{ p99LatencyMs: 9.1, complexityOrder: "O(N)" }',
+      passed: !perfDefect,
+      durationMs: perfDefect ? 264 : 11,
+      errorTrace: perfDefect
+        ? `${perfDefect.file}:${perfDefect.line} -> ${perfDefect.description}`
+        : undefined
+    },
+    {
+      id: 'IT-703',
+      name: 'test_structural_simplicity_and_conventions',
+      targetFunction: firstPublicSig,
+      requirement: 'Code must maintain cyclomatic simplicity (<6 branches/fn) and adhere to repository style & regulatory standards.',
+      input: '{ lintProfile: "strict-production", maxCyclomaticBranches: 5 }',
+      expected: '{ complexityOk: true, styleConforming: true }',
+      actual: complexityDefect || styleOrRegDefect
+        ? `{ complexityOk: ${!complexityDefect}, styleConforming: ${!styleOrRegDefect} }`
+        : '{ complexityOk: true, styleConforming: true }',
+      passed: !complexityDefect && !styleOrRegDefect,
+      durationMs: 15,
+      errorTrace: (complexityDefect || styleOrRegDefect)
+        ? `${(complexityDefect || styleOrRegDefect)!.file}:${(complexityDefect || styleOrRegDefect)!.line} -> ${(complexityDefect || styleOrRegDefect)!.description}`
+        : undefined
     }
   ];
+
+  return dynamicTests;
 }
