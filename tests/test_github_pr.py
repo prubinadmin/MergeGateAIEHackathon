@@ -101,6 +101,7 @@ def test_resolve_direct_pr_and_errors(monkeypatch):
 
 
 def test_resolve_without_a_token_calls_github_anonymously(monkeypatch, tmp_path):
+    monkeypatch.setenv("MERGE_GATE_USE_GH_AUTH", "0")  # no fallback to the developer's gh login
     monkeypatch.chdir(tmp_path)  # no .env here, so load_dotenv() finds no token
     calls = _fake_github(monkeypatch, lambda path: _pr_json(), token="")
     assert resolve("psf/requests#42").number == 42

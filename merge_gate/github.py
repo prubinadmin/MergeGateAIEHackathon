@@ -37,7 +37,7 @@ class GitHubError(RuntimeError):
 def _token() -> str:
     load_dotenv()
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
-    if not tok:
+    if not tok and os.environ.get("MERGE_GATE_USE_GH_AUTH", "1") != "0":
         # Local demo: reuse the presenter's `gh auth login` instead of a token file.
         import subprocess
 

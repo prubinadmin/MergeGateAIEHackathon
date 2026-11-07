@@ -48,6 +48,6 @@ def test_without_the_variable_nothing_goes_to_github(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "LOG_PATH", str(tmp_path / "log.jsonl"))
     monkeypatch.setattr(github, "_call", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no GitHub calls")))
     state = serve.State(use_llm=False)
-    assert [p.pr_id for p in state.demo()] == ["demo-1", "demo-2", "demo-3"]
+    assert [p.pr_id for p in state.demo()] == ["demo-1", "demo-2", "demo-3", "demo-4"]
     state.verify({"pr_id": "demo-1", "llm": False})
     assert state.published == {}
