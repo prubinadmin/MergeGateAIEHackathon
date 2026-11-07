@@ -86,3 +86,12 @@ def test_false_alarm_feedback_is_read_from_owner_replies(isolated):
     store.log_reply("demo-3", "Michael", "FALSE_ALARM", "false alarm", "log_false_alarm")
     store.log_reply("demo-1", "Peter", "BLOCK", "block", "block_pr")
     assert learn.false_alarms_from_log() == ["demo-3"]
+
+
+def test_spec_test_classes_are_tunable_like_rules(isolated):
+    issue = Evidence(type="failing_test", id="gate::test_issue_x", detail="x", severity="review")
+    cases = [case("t1", "BLOCK", "train"), case("h1", "BLOCK", "heldout"), case("h2", "PASS", "heldout", "clean")]
+    raw = {"t1": raw_report("t1", issue), "h1": raw_report("h1", issue), "h2": raw_report("h2")}
+    result = learn_round(cases, raw, false_alarms=[], cfg=GateConfig(), dir_=str(isolated / "versions"))
+    assert result["adopted"].endswith("gate::test_issue review -> block")
+    assert result["heldout_after"]["catch_rate"] == 1.0

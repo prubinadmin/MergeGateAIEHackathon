@@ -42,7 +42,7 @@ python scripts/analyze_test_cases.py test_cases/02_performance_latency_slowdown.
 ```bash
 python -m merge_gate serve            # HTTP API on 127.0.0.1:8787 for the web UI and the iMessage webhook
 python -m merge_gate log              # run log; checks the hash chain
-python -m merge_gate learn            # one learning round on benchmark/ (needs Peter's cases)
+python -m merge_gate learn            # one learning round on benchmark/ (results: benchmark/RESULTS.md)
 python -m merge_gate ci               # inside GitHub Actions: see templates/merge-gate.yml
 ```
 
@@ -119,9 +119,9 @@ is still available under its own tab (`#simulator`).
 | GitHub status check, PR comment, owner BLOCK | Michael | `merge_gate/github.py`, `merge_gate/ci.py`, `templates/merge-gate.yml` | done |
 | HTTP API for UI + iMessage webhook | Michael | `merge_gate/serve.py` | done |
 | Hash-chained run log (Mongo mirror optional) | Michael | `merge_gate/store.py` | done |
-| Learning loop, held-out adoption | Michael | `merge_gate/learn.py`, `gate_versions/` | done; needs benchmark cases |
+| Learning loop, held-out adoption | Michael | `merge_gate/learn.py`, `gate_versions/` | done; rounds in `benchmark/RESULTS.md` |
 | iMessage send / reply | TAAZ | `merge_gate/notify.py` (`Notifier`, `parse_reply`, `handle_reply`) | console stub works; plug in the iMessage provider |
-| Benchmark cases + scoring | Peter | `benchmark/`, `merge_gate/bench.py` | format + scoring done; cases to build |
+| Benchmark cases + scoring | Peter | `benchmark/`, `merge_gate/bench.py`, `merge_gate/baselines.py` | 30 cases (simulated authors), baselines, `benchmark/RESULTS.md` |
 | Interactive Web Dashboard & Simulator | Peter / Frontend | `src/`, `index.html` | done |
 
 ---

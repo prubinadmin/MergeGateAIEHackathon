@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr19",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/19",
+  "title": "Let support search orders by customer name prefix",
+  "issue_text": "Support staff often only remember the start of a company name. find_orders should take prefix=True to return orders for every customer whose name starts with the given text. Default behaviour stays the same.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "security_hole",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "dana@example.com",
+    "split": "train"
+  }
+}

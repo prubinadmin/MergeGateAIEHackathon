@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr23",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/23",
+  "title": "Make add_business_days fast for long lead times",
+  "issue_text": "add_business_days walks one day at a time. Made-to-order items have 200+ business-day lead times and the catalogue export calls it for every item. Make it faster with the same results.",
+  "opened_by": "agent:autofix-bot",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "fatima@example.com",
+    "split": "train"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr16",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/16",
+  "title": "Add a 20% volume tier for 500+ units",
+  "issue_text": "Wholesale customers ordering 500 units or more of one SKU should get 20% off. All other tiers stay as they are.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "ada@example.com",
+    "split": "train"
+  }
+}
