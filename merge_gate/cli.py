@@ -110,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--stub", action="store_true", help="return a fixed BLOCK report")
     _llm_flags(v)
 
+    gh = sub.add_parser("github", help="verify a live GitHub PR: owner/repo#N, owner/repo (newest open PR) or a repo name to search")
+    gh.add_argument("query")
+    gh.add_argument("--out", default=None, help="also write the report JSON here")
+    _llm_flags(gh)
+
     d = sub.add_parser("demo", help="build the demo repo in a temp dir and run the gate on its PRs")
     _llm_flags(d)
     d.add_argument("--keep", default=None, help="build the demo repo here instead of a temp dir")
@@ -178,6 +183,20 @@ def main(argv: list[str] | None = None) -> int:
         from .verify import verify
 
         print(verify(load_case(args.case).pr, use_llm=_use_llm(args), use_subq=_use_subq(args)).to_json())
+        return 0
+
+    if args.cmd == "github":
+        from .github_pr import scan
+
+        def progress(name, status, data):
+            print(f"[merge-gate] {name} {status}" + (f" {data['ms']}ms" if "ms" in data else "") + (f" {data['url']}" if "url" in data else ""), file=sys.stderr)
+
+        report, pr, resolved = scan(args.query, use_llm=_use_llm(args), use_subq=_use_subq(args), on_stage=progress)
+        print(f"[merge-gate] {resolved.html_url} -> {pr.pr_id} (clone: {pr.repo_path})", file=sys.stderr)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                f.write(report.to_json())
+        print(report.to_json())
         return 0
 
     if args.cmd == "validate":
