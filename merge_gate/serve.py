@@ -49,6 +49,9 @@ class State:
         self.notifier = imessage.notifier_from_env()
         # phone_key -> the PR that number was last messaged about (so a bare "BLOCK" reply has a target)
         self.threads: dict[str, dict] = {}
+        # agentic paging: every verdict texts the code owner on its own (MERGE_GATE_AUTO_PAGE=0 turns it off)
+        self.auto_page = os.environ.get("MERGE_GATE_AUTO_PAGE", "1") != "0"
+        self._paged: set[tuple[str, str]] = set()  # (pr_id, run_hash): never re-page an identical result
 
     def demo(self) -> list[PullRequest]:
         with self.lock:
@@ -87,6 +90,15 @@ class State:
         with self.lock:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
+        if self.auto_page and report.owners:
+            if on_stage:
+                on_stage("page", "start", {})
+            try:
+                out = self.page(report, body.get("pr_url", ""), body.get("github") or {}, dedupe=True)
+            except Exception as e:  # noqa: BLE001 - a failed text must never fail the verdict
+                out = {"error": f"{type(e).__name__}: {e}"}
+            if on_stage:
+                on_stage("page", "done", out)
         return report
 
     def teach(self, report: VerdictReport, sentence: str) -> str:
@@ -112,6 +124,23 @@ class State:
         with self.lock:
             self.reports.clear()  # any PR may have carried that rule's evidence
         return "Forgot: " + "; ".join(f'{e["test_name"]} ("{e["sentence"]}")' for e in gone)
+
+    def page(self, r: VerdictReport, pr_url: str = "", github: dict | None = None, dedupe: bool = False) -> dict:
+        """Text owners[0] the verdict (full page, or one-line FYI on PASS) and open the reply thread."""
+        text = format_message(r, pr_url)
+        out = {"to": r.owners[0].name if r.owners else None, "text": text, "sent": None}
+        if not r.owners:
+            return {**out, "skipped": "no code owner"}
+        phone = imessage.phone_for(r.owners[0].email)
+        if not phone:
+            return {**out, "error": f"no phone on file for {r.owners[0].email}"}
+        key = (r.pr_id, r.run_hash)
+        if dedupe and key in self._paged:
+            return {**out, "skipped": "already paged for this exact result"}
+        out["sent"] = self.notifier.send(phone, text)
+        self._paged.add(key)
+        self.threads[imessage.phone_key(phone)] = {"pr_id": r.pr_id, "pr_url": pr_url, "github": github or {}}
+        return out
 
     def report(self, pr_id: str) -> VerdictReport:
         r = self.reports.get(pr_id)
@@ -270,10 +299,16 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
                 github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
                 blocked = True
-            if action.text:
-                state.notifier.send(inbound.phone, action.text)
             _teach_or_forget(state, inbound.phone, r, reply.note, action.kind)
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
+
+            def answer() -> None:  # Muse can take seconds; Sendblue gets its 200 now, the owner gets the text after
+                try:
+                    state.notifier.send(inbound.phone, imessage.converse(r, reply.raw, action, thread["pr_url"]))
+                except Exception as e:  # noqa: BLE001 - never lose the reply silently
+                    print(f"[merge-gate] reply to owner failed: {type(e).__name__}: {e}", flush=True)
+
+            threading.Thread(target=answer, daemon=True).start()
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 
         def do_POST(self) -> None:
@@ -289,12 +324,10 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     # text follows the report's urgency: "fyi" is a one-line FYI, "page" (or unassessed) the full message
                     out = {"to": r.owners[0].__dict__ if r.owners else None, "text": text, "urgency": r.urgency or "page", "sent": None}
                     if body.get("send") and r.owners:
-                        phone = imessage.phone_for(r.owners[0].email)
-                        if not phone:
-                            return self._send(400, {**out, "error": f"no OWNER_PHONES entry for {r.owners[0].email}"})
-                        out["sent"] = state.notifier.send(phone, text)
-                        state.threads[imessage.phone_key(phone)] = {
-                            "pr_id": r.pr_id, "pr_url": body.get("pr_url", ""), "github": body.get("github") or {}}
+                        paged = state.page(r, body.get("pr_url", ""), body.get("github") or {})
+                        if paged.get("error"):
+                            return self._send(400, {**out, "error": paged["error"]})
+                        out["sent"] = paged["sent"]
                     return self._send(200, out)
                 if urllib.parse.urlparse(self.path).path == "/api/sendblue":
                     return self._sendblue(body)
