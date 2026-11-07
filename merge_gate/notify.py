@@ -3,23 +3,25 @@
 Contract:
   1. format_message(report)          -> the text sent to owners[0]
   2. Notifier.send(phone, text)      -> provider message id   (TAAZ: the iMessage provider)
-  3. parse_reply(text)               -> Reply                  (the owner texts back; free text = TEACH)
+  3. parse_reply(text)               -> Reply                  (the owner texts back; a rule = TEACH)
   4. handle_reply(report, reply)     -> Action                 (what the gate does next)
 
 Design rule: easy to stop, hard to approve. A text can BLOCK a PR. A text can never approve or merge one:
 OK only answers with the GitHub link, where approval needs the owner's own login.
-A sentence that is not a command is a rule the owner is TEACHING the gate (see owner_tests.rule_to_test).
+A text that reads like a rule (must, never, always...) or starts with RULE: teaches the gate (owner_tests.py);
+any block/stop/hold/reject/revert or "don't merge" wording is BLOCK first. FORGET <test> removes a rule.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from .schema import VerdictReport
 
-Command = Literal["BLOCK", "WHY", "OK", "FALSE_ALARM", "TEACH", "UNKNOWN"]
-ActionKind = Literal["block_pr", "send_text", "log_false_alarm", "teach", "none"]
+Command = Literal["BLOCK", "WHY", "OK", "FALSE_ALARM", "TEACH", "FORGET", "UNKNOWN"]
+ActionKind = Literal["block_pr", "send_text", "log_false_alarm", "teach", "forget", "none"]
 
 
 @dataclass
@@ -60,20 +62,36 @@ _ALIASES: dict[str, Command] = {
     "FALSE": "FALSE_ALARM",
     "FALSE_ALARM": "FALSE_ALARM",
     "FP": "FALSE_ALARM",
+    "FORGET": "FORGET",
 }
+
+# Easy to stop: any of these anywhere in a non-command text (or after OK) means BLOCK, never a rule.
+_BLOCK_INTENT = re.compile(r"\b(block|stop|hold|reject|revert)\b|\b(don'?t|dont|do\s+not)\s+merge\b", re.I)
+# Only text that reads like a rule is taught; "looks good thanks" is not.
+_RULE_WORDS = re.compile(r"\b(must|never|always|should|only|cannot|can'?t|at\s+least|at\s+most)\b|>=|<=", re.I)
 
 
 def parse_reply(text: str) -> Reply:
-    words = text.strip().split()
+    norm = text.replace("’", "'")  # iMessage sends curly apostrophes
+    words = norm.strip().split()
     if not words:
         return Reply("UNKNOWN", text)
-    first = words[0].upper().strip(".!,?")
+    first = words[0].upper().strip(".!,?:")
+    if words[0].upper().startswith("RULE:") or first == "RULE":  # explicit: always teaches
+        note = norm.strip()[4:].lstrip(": ").strip()
+        return Reply("TEACH", text, note) if note else Reply("UNKNOWN", text)
     if first == "FALSE" and len(words) > 1 and words[1].upper().strip(".!,?") == "ALARM":
         return Reply("FALSE_ALARM", text, " ".join(words[2:]))
     cmd = _ALIASES.get(first)
-    if cmd is None:  # not a command: a sentence is a rule the owner is teaching; "lol" or "thanks" is not
-        return Reply("TEACH", text, text.strip()) if len(words) >= 3 else Reply("UNKNOWN", text)
-    return Reply(cmd, text, " ".join(words[1:]))
+    if cmd and cmd != "OK":
+        return Reply(cmd, text, " ".join(words[1:]))
+    if _BLOCK_INTENT.search(norm):
+        return Reply("BLOCK", text, norm.strip())
+    if cmd == "OK":
+        return Reply("OK", text, " ".join(words[1:]))
+    if _RULE_WORDS.search(norm):
+        return Reply("TEACH", text, norm.strip())
+    return Reply("UNKNOWN", text)
 
 
 def format_message(report: VerdictReport, pr_url: str = "") -> str:
@@ -106,4 +124,6 @@ def handle_reply(report: VerdictReport, reply: Reply, pr_url: str = "") -> Actio
         return Action("log_false_alarm", "Thanks, logged. The gate will learn from it if held-out PRs agree.")
     if reply.command == "TEACH":
         return Action("teach", "Got it — turning that into a test…")
+    if reply.command == "FORGET":
+        return Action("forget")  # serve.py removes the owner's rule and texts what it removed
     return Action("none", "Reply BLOCK, WHY, OK or FALSE ALARM.")

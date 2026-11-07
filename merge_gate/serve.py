@@ -7,7 +7,7 @@
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
   POST /api/reply    {"pr_id": "demo-1", "text": "BLOCK", "github": {"repo": "o/r", "number": 7}}
                                                          -> {"command", "action", "text", "github_blocked"}
-       free text (a rule to teach) -> 403: teaching only via the verified-phone webhook below
+       a rule to teach, or FORGET <test> -> 403: only via the verified-phone webhook below
   POST /api/message  {..., "send": true, "github": {...}}  -> also sends the iMessage via Sendblue (or console)
   POST /api/sendblue?token=SECRET     Sendblue inbound webhook; only the PR owner's verified phone can act
   GET  /api/log                       run log records + whether the hash chain verifies
@@ -95,6 +95,19 @@ class State:
             with self.lock:
                 self.reports.pop(report.pr_id, None)  # next look at this PR includes the new evidence
         return outcome_text(t)
+
+    def forget(self, report: VerdictReport, name: str) -> str:
+        """FORGET <test name or id>: the owner removes one of THEIR OWN rules."""
+        from .owner_tests import remove
+
+        if not name.strip():
+            return "Text FORGET <test name> to remove a rule you taught."
+        gone = remove(name, owner=report.owners[0].email if report.owners else "owner")
+        if not gone:
+            return f"No rule of yours called {name.strip()}."
+        with self.lock:
+            self.reports.clear()  # any PR may have carried that rule's evidence
+        return "Forgot: " + "; ".join(f'{e["test_name"]} ("{e["sentence"]}")' for e in gone)
 
     def report(self, pr_id: str) -> VerdictReport:
         r = self.reports.get(pr_id)
@@ -248,6 +261,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     state.notifier.send(inbound.phone, text)
 
                 threading.Thread(target=teach, daemon=True).start()
+            if action.kind == "forget":
+                state.notifier.send(inbound.phone, state.forget(r, reply.note))
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 
@@ -278,6 +293,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     action = handle_reply(r, reply, body.get("pr_url", ""))
                     if action.kind == "teach":  # runs model-written code: only the verified phone (/api/sendblue) may
                         return self._send(403, {"error": "teach requires a verified owner (reply by iMessage)"})
+                    if action.kind == "forget":
+                        return self._send(403, {"error": "forget requires a verified owner (reply by iMessage)"})
                     owner = r.owners[0].name if r.owners else "owner"
                     blocked = False
                     gh = body.get("github") or {}

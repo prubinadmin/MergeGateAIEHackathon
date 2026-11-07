@@ -118,7 +118,26 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--stub", action="store_true")
     _llm_flags(b)
 
+    ot = sub.add_parser("owner-tests", help="list or remove the rules owners taught the gate by iMessage")
+    ot.add_argument("action", choices=["list", "remove"])
+    ot.add_argument("id", nargs="?", help="rule id, file or test name (for remove)")
+
     args = p.parse_args(argv)
+
+    if args.cmd == "owner-tests":
+        from . import owner_tests
+
+        if args.action == "list":
+            for e in owner_tests.load_registry():
+                print(f'{e.get("id") or e["file"]}  {e["owner"]}  "{e["sentence"]}"')
+            return 0
+        if not args.id:
+            print("owner-tests remove needs an id (see owner-tests list)", file=sys.stderr)
+            return 2
+        gone = owner_tests.remove(args.id)
+        for e in gone:
+            print(f'removed {e.get("id") or e["file"]}  "{e["sentence"]}"')
+        return 0 if gone else 1
 
     if args.cmd == "verify":
         if args.stub:
