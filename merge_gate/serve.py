@@ -7,6 +7,7 @@
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
   POST /api/reply    {"pr_id": "demo-1", "text": "BLOCK", "github": {"repo": "o/r", "number": 7}}
                                                          -> {"command", "action", "text", "github_blocked"}
+       free text (not a command) teaches the gate a rule (owner_tests.py); "text" is then the outcome
   POST /api/message  {..., "send": true, "github": {...}}  -> also sends the iMessage via Sendblue (or console)
   POST /api/sendblue?token=SECRET     Sendblue inbound webhook; only the PR owner's verified phone can act
   GET  /api/log                       run log records + whether the hash chain verifies
@@ -83,6 +84,17 @@ class State:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
         return report
+
+    def teach(self, report: VerdictReport, sentence: str) -> str:
+        """The owner's sentence -> a stored test (owner_tests.rule_to_test); returns the reply text."""
+        from .owner_tests import outcome_text, rule_to_test
+
+        pr = self.prs[report.pr_id]
+        t = rule_to_test(pr, report.owners[0].email if report.owners else "owner", sentence)
+        if t.accepted:
+            with self.lock:
+                self.reports.pop(report.pr_id, None)  # next look at this PR includes the new evidence
+        return outcome_text(t)
 
     def report(self, pr_id: str) -> VerdictReport:
         r = self.reports.get(pr_id)
@@ -227,6 +239,15 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 blocked = True
             if action.text:
                 state.notifier.send(inbound.phone, action.text)
+            if action.kind == "teach":  # Muse + two sandbox runs: answer the webhook now, text the outcome after
+                def teach() -> None:
+                    try:
+                        text = state.teach(r, reply.note)
+                    except Exception as e:  # noqa: BLE001 - tell the owner instead of dying silently in a thread
+                        text = f"Couldn't learn that: {e}"
+                    state.notifier.send(inbound.phone, text)
+
+                threading.Thread(target=teach, daemon=True).start()
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 
@@ -263,8 +284,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
                         github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
                         blocked = True
+                    text = state.teach(r, reply.note) if action.kind == "teach" else action.text
                     store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
-                    return self._send(200, {"command": reply.command, "action": action.kind, "text": action.text, "github_blocked": blocked})
+                    return self._send(200, {"command": reply.command, "action": action.kind, "text": text, "github_blocked": blocked})
                 return self._send(404, {"error": "not found"})
             except KeyError as e:
                 return self._send(400, {"error": str(e)})

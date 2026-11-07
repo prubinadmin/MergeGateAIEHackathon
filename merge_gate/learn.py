@@ -40,6 +40,9 @@ def apply_config(evidence: list[Evidence], cfg: GateConfig | None) -> list[Evide
         return evidence
     out = []
     for e in evidence:
+        if e.id.startswith("owner::"):  # an owner's own rule: learned config never mutes or downgrades it
+            out.append(e)
+            continue
         level = cfg.rule_severity.get(e.id) or cfg.rule_severity.get(e.id.split("::")[0])
         if level == "off":
             continue
