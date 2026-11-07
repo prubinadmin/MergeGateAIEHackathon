@@ -1,12 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
-/* daisyUI is opt-in: every class is prefixed d- (d-btn, d-card) and the base styles that would
-   restyle existing pages (page colors, scrollbars, svg, reset) are excluded. */
-@plugin "daisyui" {
-  prefix: "d-";
-  themes: dark --default;
-  exclude: rootcolor, rootscrollgutter, rootscrolllock, scrollbar, svg, reset;
-}
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {

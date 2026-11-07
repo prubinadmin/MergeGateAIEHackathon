@@ -66,6 +66,19 @@ function StatsBar({ stats, llm }: { stats: Stats | null; llm: boolean | null }) 
   );
 }
 
+// Owns its own 100ms tick so only the clock re-renders. It must keep moving during long stages
+// (Muse Spark can take a minute), or the demo looks frozen.
+function CaseClock({ startedAt, clock, running }: { startedAt: number; clock: number; running: boolean }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setTick((x) => x + 1), 100);
+    return () => clearInterval(t);
+  }, [running]);
+  const shown = running && startedAt ? Math.max(clock, (Date.now() - startedAt) / 1000) : clock;
+  return <div className="font-mono text-lg text-zinc-100 tabular-nums">T+{shown.toFixed(1)}s</div>;
+}
+
 function Lane({ title, ev, children }: { title: string; ev?: StageEvent; children?: React.ReactNode }) {
   const status = ev?.status;
   return (
@@ -133,13 +146,8 @@ export default function WarRoom() {
   const [replyBusy, setReplyBusy] = useState(false);
   const [paging, setPaging] = useState<Record<string, { status: 'sending' | 'sent' | 'error'; note: string }>>({});
 
-  // the case clock must keep moving during long stages (Muse Spark can take a minute), or the demo looks frozen
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => setTick((x) => x + 1), 100);
-    return () => clearInterval(t);
-  }, [running]);
+  const cancelRun = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelRun.current?.(), []);
 
   const refreshStats = useCallback(() => getStats().then(setStats).catch(() => {}), []);
 
@@ -159,16 +167,21 @@ export default function WarRoom() {
     setSel(id);
     setRunning(id);
     setCases((all) => ({ ...all, [id]: { ...EMPTY, startedAt: Date.now() } }));
-    runGate(id, useLlm, (ev: RunEvent) => {
+    setPaging((all) => { const { [id]: _, ...rest } = all; return rest; });
+    // freeze the clock at whichever is later so it never jumps backward when the run ends
+    const final = (c: CaseState, t: number) => Math.max(t, (Date.now() - c.startedAt) / 1000);
+    cancelRun.current = runGate(id, useLlm, (ev: RunEvent) => {
       if (ev.type === 'stage') patch(id, (c) => ({ ...c, clock: ev.t, stages: { ...c.stages, [ev.stage]: ev } }));
       else if (ev.type === 'report') {
-        patch(id, (c) => ({ ...c, clock: ev.t, report: ev.report, chainOk: ev.chain_ok }));
+        patch(id, (c) => ({ ...c, clock: final(c, ev.t), report: ev.report, chainOk: ev.chain_ok }));
         setRunning('');
+        cancelRun.current = null;
         refreshStats();
         getMessage(id).then((m) => patch(id, (c) => ({ ...c, bubbles: [{ from: 'gate', text: m.text, at: now() }] })));
       } else if (ev.type === 'error') {
-        patch(id, (c) => ({ ...c, error: ev.error }));
+        patch(id, (c) => ({ ...c, clock: final(c, c.clock), error: ev.error }));
         setRunning('');
+        cancelRun.current = null;
       }
     });
   }, [running, useLlm, refreshStats]);
@@ -193,9 +206,13 @@ export default function WarRoom() {
   const page = async (id: string) => {
     setPaging((all) => ({ ...all, [id]: { status: 'sending', note: '' } }));
     try {
-      const m = await pageOwner(id);
-      const real = m.sent && !m.sent.startsWith('console-');
-      setPaging((all) => ({ ...all, [id]: { status: 'sent', note: real ? `Delivered to Sendblue for ${m.to?.name}` : `No Sendblue keys on the server: printed to its console instead` } }));
+      const m = await pageOwner(id, '');
+      const next = !m.sent
+        ? { status: 'error' as const, note: 'Nothing sent: this PR has no code owner on file.' }
+        : m.sent.startsWith('console-')
+          ? { status: 'sent' as const, note: 'No Sendblue keys on the server: printed to its console instead' }
+          : { status: 'sent' as const, note: `Delivered to Sendblue for ${m.to?.name}` };
+      setPaging((all) => ({ ...all, [id]: next }));
     } catch (e) {
       setPaging((all) => ({ ...all, [id]: { status: 'error', note: (e as Error).message } }));
     }
@@ -212,11 +229,10 @@ export default function WarRoom() {
     return m;
   }, [r, c.stages.rules]);
   const tg = c.stages.testgen;
-  const clock = running === sel && c.startedAt ? Math.max(c.clock, (Date.now() - c.startedAt) / 1000) : c.clock;
   const owners = (c.stages.owners?.owners || r?.owners || []) as Report['owners'];
 
   return (
-    <div className="min-h-screen bg-[#0a0a0b] text-zinc-100">
+    <div className="flex-1 bg-[#0a0a0b] text-zinc-100">
       {apiDown && <div className="bg-red-950/60 border-b border-red-900 px-6 py-2 text-[13px] text-red-200 font-mono">{apiDown}</div>}
       <StatsBar stats={stats} llm={llm} />
 
@@ -241,7 +257,7 @@ export default function WarRoom() {
             </label>
             <div className="text-right">
               <div className="font-mono text-[10.5px] tracking-wider text-zinc-500">CASE CLOCK · REAL TIME</div>
-              <div className="font-mono text-lg text-zinc-100 tabular-nums">T+{clock.toFixed(1)}s</div>
+              <CaseClock startedAt={c.startedAt} clock={c.clock} running={running === sel} />
             </div>
           </div>
         </div>

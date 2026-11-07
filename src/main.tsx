@@ -1,17 +1,24 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Lock, Radio, Wrench } from 'lucide-react';
 import App from './App.tsx';
 import WarRoom from './warroom/WarRoom.tsx';
 import './index.css';
 
-type View = 'live' | 'simulator';
+type View = 'simulator' | 'live';
+
+const fromHash = (): View => (location.hash === '#live' ? 'live' : 'simulator');
 
 function Root() {
-  const [view, setView] = useState<View>(() => (location.hash === '#simulator' ? 'simulator' : 'live'));
+  const [view, setView] = useState<View>(fromHash);
+  useEffect(() => {
+    const onHash = () => setView(fromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   const go = (v: View) => {
     setView(v);
-    history.replaceState(null, '', v === 'simulator' ? '#simulator' : '#');
+    history.replaceState(null, '', v === 'live' ? '#live' : location.pathname + location.search);
   };
   const tab = (v: View, label: string, icon: ReactNode) => (
     <button
@@ -21,20 +28,22 @@ function Root() {
       {icon}{label}
     </button>
   );
+  // Both views stay mounted so a live gate run survives a tab switch; each view owns its background.
   return (
-    <div className="min-h-screen bg-[#0a0a0b] selection:bg-amber-500/30">
-      <nav className="flex items-center gap-6 border-b border-zinc-900 px-6 py-3">
+    <div className="flex min-h-screen flex-col selection:bg-amber-500/30">
+      <nav className="flex items-center gap-6 border-b border-zinc-900 bg-[#0a0a0b] px-6 py-2">
         <span className="flex items-center gap-2 text-[15px] font-semibold text-zinc-100">
           <span className="flex h-7 w-7 items-center justify-center rounded-full border border-amber-500/70 text-amber-400"><Lock size={14} /></span>
           Merge Gate
         </span>
         <div className="flex items-center gap-1">
-          {tab('live', 'Live gate', <Radio size={14} />)}
           {tab('simulator', 'Simulator', <Wrench size={14} />)}
+          {tab('live', 'Live gate', <Radio size={14} />)}
         </div>
         <span className="ml-auto hidden text-[12px] text-zinc-500 md:block">The right engineer, on their phone, with proof.</span>
       </nav>
-      {view === 'live' ? <WarRoom /> : <App />}
+      <div className={view === 'simulator' ? 'flex flex-1 flex-col' : 'hidden'}><App /></div>
+      <div className={view === 'live' ? 'flex flex-1 flex-col' : 'hidden'}><WarRoom /></div>
     </div>
   );
 }
