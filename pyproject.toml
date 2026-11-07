@@ -3,7 +3,7 @@ name = "merge-gate"
 version = "0.1.0"
 description = "Verify external PRs and route findings to the engineer who wrote the code, by iMessage."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["pymongo[srv]>=4.7,<5"]  # run log mirrored to MongoDB Atlas when MONGODB_URI is set
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
