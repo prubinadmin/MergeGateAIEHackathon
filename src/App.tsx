@@ -26,7 +26,6 @@ import { evaluateMergeGate } from './services/verdictEngine';
 import { INITIAL_GATE_VERSIONS } from './services/learningEngine';
 
 import {
-  AiAgentVerificationReport,
   AntiGamingViolation,
   CodeOwner,
   GateRuleVersion,
@@ -44,88 +43,13 @@ export default function App() {
   const [antiGamingViolations, setAntiGamingViolations] = useState<AntiGamingViolation[]>([]);
   const [independentTests, setIndependentTests] = useState<IndependentTestCase[]>([]);
   const [gateResult, setGateResult] = useState<MergeGateResult | null>(null);
-  const [aiAgentReport, setAiAgentReport] = useState<AiAgentVerificationReport | null>(null);
-  const [isAiAgentRunning, setIsAiAgentRunning] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [gateVersions, setGateVersions] = useState<GateRuleVersion[]>(INITIAL_GATE_VERSIONS);
   const [messages, setMessages] = useState<PhoneMessage[]>([]);
   const [prStatus, setPrStatus] = useState<string>('OPEN');
 
-  // Helper to merge deterministic AST violations with unique AI-Agent-discovered violations without duplicates
-  const mergeViolations = (
-    baseViolations: AntiGamingViolation[],
-    agentViolations: AntiGamingViolation[]
-  ): AntiGamingViolation[] => {
-    const merged = [...baseViolations];
-    for (const av of agentViolations) {
-      const exists = merged.some(
-        bv =>
-          bv.file === av.file &&
-          bv.ruleId === av.ruleId &&
-          Math.abs(bv.line - av.line) <= 3
-      );
-      if (!exists) {
-        merged.push(av);
-      }
-    }
-    return merged;
-  };
-
-  // Run the AI Test Verifier Agent to synthesize dynamic tests & unique defect suggestions
-  const executeAiAgentForPr = useCallback(
-    async (
-      pr: PullRequest,
-      allOwners: CodeOwner[],
-      baseViolations: AntiGamingViolation[]
-    ) => {
-      setIsAiAgentRunning(true);
-      try {
-        const report = await runAiTestVerifierAgent(pr);
-        setAiAgentReport(report);
-
-        const combinedViolations = mergeViolations(baseViolations, report.detectedViolations);
-        const finalTests =
-          report.synthesizedTests.length > 0
-            ? report.synthesizedTests
-            : generateIndependentTests(pr);
-
-        setAntiGamingViolations(combinedViolations);
-        setIndependentTests(finalTests);
-
-        const updatedResult = await evaluateMergeGate(pr, allOwners, combinedViolations, finalTests);
-        setGateResult(updatedResult);
-        setPrStatus(
-          pr.status === 'BLOCKED'
-            ? 'BLOCKED'
-            : updatedResult.verdict === 'BLOCK'
-            ? 'OPEN (BLOCKED RECOMMENDED)'
-            : 'OPEN'
-        );
-
-        const primaryOwner = allOwners[0] || { name: 'Peter Chen', phone: '+1 415-555-0142', lines: 1, last_touched: '2026-03-14' };
-        const initialMsg: PhoneMessage = {
-          id: `msg-${Date.now()}`,
-          prId: pr.id,
-          recipientName: primaryOwner.name,
-          recipientPhone: primaryOwner.phone || '+1 415-555-0142',
-          sender: 'merge-gate',
-          body: updatedResult.summary,
-          timestamp: '11:58 AM',
-          evidenceLink:
-            updatedResult.verdict === 'BLOCK'
-              ? 'https://merge-gate.internal/runs/' + updatedResult.run_hash
-              : undefined
-        };
-        setMessages([initialMsg]);
-      } finally {
-        setIsAiAgentRunning(false);
-      }
-    },
-    []
-  );
-
-  // Evaluate the pipeline for the given PR (instant generic AST pass + live AI Test Agent pass)
+  // Evaluate the pipeline for the given PR (using generic AST test synthesis + background AI Test Agent)
   const evaluatePr = useCallback(async (pr: PullRequest) => {
     setIsRunning(true);
 
@@ -133,11 +57,11 @@ export default function App() {
     const { primaryOwner, allOwners } = calculateOwnerAttribution(pr.files);
     setOwners(allOwners);
 
-    // 2. Deterministic + Generic AST checks
+    // 2. Anti-gaming & benchmark defect checks
     const violations = runAntiGamingChecks(pr.files, pr.issueDescription);
     setAntiGamingViolations(violations);
 
-    // 3. Generic Function-Extracted Independent Tests (no hardcoded PR IDs)
+    // 3. Sandboxed independent test run (generic AST function-driven)
     const tests = generateIndependentTests(pr);
     setIndependentTests(tests);
 
@@ -161,9 +85,25 @@ export default function App() {
     setMessages([initialMsg]);
     setIsRunning(false);
 
-    // 6. Trigger live AI Test Agent to synthesize deeper scenario-specific tests & refactoring suggestions
-    executeAiAgentForPr(pr, allOwners, violations);
-  }, [executeAiAgentForPr]);
+    // 6. Background AI Test Agent pass (/api/agent-verifier) to enrich tests & detect unique errors
+    runAiTestVerifierAgent(pr).then(async (report) => {
+      if (report.mode === 'live-gemini-agent' && report.synthesizedTests.length > 0) {
+        const mergedViolations = [...violations];
+        for (const av of report.detectedViolations) {
+          const exists = mergedViolations.some(
+            bv => bv.file === av.file && bv.ruleId === av.ruleId && Math.abs(bv.line - av.line) <= 3
+          );
+          if (!exists) mergedViolations.push(av);
+        }
+        setAntiGamingViolations(mergedViolations);
+        setIndependentTests(report.synthesizedTests);
+        const updatedResult = await evaluateMergeGate(pr, allOwners, mergedViolations, report.synthesizedTests);
+        setGateResult(updatedResult);
+      }
+    }).catch(() => {
+      // Keep generic AST test results
+    });
+  }, []);
 
   // Run on initial load and when switching PR
   useEffect(() => {
@@ -198,7 +138,7 @@ export default function App() {
       if (antiGamingViolations.length > 0 && independentTests.some(t => !t.passed)) {
         const topViolation = antiGamingViolations[0];
         const failingTest = independentTests.find(t => !t.passed);
-        botReplyText = `Failure breakdown:\n1. Rule ${topViolation.ruleId} (${topViolation.ruleName}): ${topViolation.description}\n2. Independent test ${failingTest?.id} (${failingTest?.name}): Expected ${failingTest?.expected}, got ${failingTest?.actual}.`;
+        botReplyText = `Failure breakdown:\n1. Rule ${topViolation.ruleId} (${topViolation.ruleName}): ${topViolation.description}\n2. Independent test ${failingTest?.id}: Expected ${failingTest?.expected}, got ${failingTest?.actual}.`;
       } else if (independentTests.some(t => !t.passed)) {
         const failingTest = independentTests.find(t => !t.passed);
         botReplyText = `Failing Independent Test: ${failingTest?.id} (${failingTest?.name})\nExpected: ${failingTest?.expected}\nActual: ${failingTest?.actual}\nTrace: ${failingTest?.errorTrace || 'Assertion failed in sandbox'}`;
@@ -262,7 +202,7 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onRunEval={() => evaluatePr(selectedPr)}
-        isRunning={isRunning || isAiAgentRunning}
+        isRunning={isRunning}
         currentVerdict={gateResult?.verdict}
       />
 
@@ -285,9 +225,6 @@ export default function App() {
               antiGamingViolations={antiGamingViolations}
               independentTests={independentTests}
               gateResult={gateResult}
-              aiAgentReport={aiAgentReport}
-              isAiAgentRunning={isAiAgentRunning}
-              onRunAiAgent={() => executeAiAgentForPr(selectedPr, owners, runAntiGamingChecks(selectedPr.files, selectedPr.issueDescription))}
               onNavigateToPhone={() => setActiveTab('phone')}
               onNavigateToDiff={() => setActiveTab('diff')}
               onNavigateToCode={() => setActiveTab('starter-code')}
@@ -314,11 +251,11 @@ export default function App() {
           <div className="space-y-6">
             <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
               <h3 className="text-base font-bold text-white tracking-tight mb-1">
-                Diff &amp; Line-Level Git Blame Inspector
+                Diff & Line-Level Git Blame Inspector
               </h3>
               <p className="text-xs text-slate-400">
                 Shows exact lines touched, with the original author blamed on each base line.
-                Anti-gaming violations and AI-detected defects are highlighted directly inline on the affected code.
+                Anti-gaming violations are highlighted directly inline on the affected code.
               </p>
             </div>
             <DiffViewer pr={selectedPr} violations={antiGamingViolations} />
