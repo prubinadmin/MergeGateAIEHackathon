@@ -1,10 +1,14 @@
-"""github_pr: query parsing, API resolution (mocked, no network) and a blame-capable clone from a local bare repo."""
+"""github_pr: query parsing, API resolution (HTTP faked at urllib, no network) and a blame-capable clone from a local bare repo."""
 
+import io
+import json
 import subprocess
+import urllib.error
+import urllib.request
 
 import pytest
 
-from merge_gate import github_pr
+from merge_gate import github
 from merge_gate.demo import build_demo_repo
 from merge_gate.github import GitHubError
 from merge_gate.github_pr import ResolvedPR, materialize, parse_query, resolve
@@ -19,6 +23,32 @@ def _pr_json(full="psf/requests", number=42, size=1234):
         "user": {"login": "someone"}, "base": {"ref": "main", "repo": {"full_name": full, "size": size}},
         "head": {"sha": "abc123"}, "html_url": f"https://github.com/{full}/pull/{number}",
     }
+
+
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _fake_github(monkeypatch, routes, token="test-token"):
+    """Fake api.github.com at the urllib boundary: routes(path) -> JSON body (or raises). Returns the calls made."""
+    calls: list[tuple[str, str | None]] = []
+    if token:
+        monkeypatch.setenv("GITHUB_TOKEN", token)
+    else:
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    def urlopen(req, timeout=None):
+        assert req.full_url.startswith(github.API)
+        calls.append((req.full_url[len(github.API):], req.get_header("Authorization")))
+        return _Resp(json.dumps(routes(calls[-1][0])).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return calls
 
 
 @pytest.mark.parametrize("q, want", [
@@ -36,34 +66,45 @@ def test_parse_query(q, want):
 
 
 def test_resolve_bare_word_searches_then_takes_newest_open_pr(monkeypatch):
-    calls = []
-
-    def fake_api(path):
-        calls.append(path)
+    def routes(path):
         if path.startswith("/search/repositories"):
             assert "q=vllm" in path and "sort=stars" in path
             return {"total_count": 1, "items": [{"full_name": "vllm-project/vllm"}]}
         assert path == "/repos/vllm-project/vllm/pulls?state=open&sort=created&direction=desc&per_page=1"
         return [_pr_json("vllm-project/vllm", 9001)]
 
-    monkeypatch.setattr(github_pr, "_api", fake_api)
+    calls = _fake_github(monkeypatch, routes)
     r = resolve("vllm")
     assert (r.owner, r.repo, r.number, r.base_ref, r.head_sha, r.author) == ("vllm-project", "vllm", 9001, "main", "abc123", "someone")
     assert r.pr_id == "gh:vllm-project/vllm#9001" and r.html_url.endswith("/pull/9001")
-    assert len(calls) == 2
+    assert len(calls) == 2 and {auth for _, auth in calls} == {"Bearer test-token"}  # the token reaches GitHub, nothing else
 
 
 def test_resolve_direct_pr_and_errors(monkeypatch):
-    monkeypatch.setattr(github_pr, "_api", lambda path: _pr_json() if path == "/repos/psf/requests/pulls/42" else pytest.fail(path))
+    _fake_github(monkeypatch, lambda path: _pr_json() if path == "/repos/psf/requests/pulls/42" else pytest.fail(path))
     assert resolve("https://github.com/psf/requests/pull/42").number == 42
 
-    monkeypatch.setattr(github_pr, "_api", lambda path: {"total_count": 0, "items": []})
+    _fake_github(monkeypatch, lambda path: {"total_count": 0, "items": []})
     with pytest.raises(GitHubError, match="no GitHub repository matches"):
         resolve("zzqqxx-nothing")
 
-    monkeypatch.setattr(github_pr, "_api", lambda path: [])
+    _fake_github(monkeypatch, lambda path: [])
     with pytest.raises(GitHubError, match="no open pull requests"):
         resolve("psf/requests")
+
+    def not_found(path):
+        raise urllib.error.HTTPError(github.API + path, 404, "Not Found", None, io.BytesIO(b'{"message":"Not Found"}'))
+
+    _fake_github(monkeypatch, not_found)
+    with pytest.raises(GitHubError, match="HTTP 404"):
+        resolve("psf/requests#1")
+
+
+def test_resolve_without_a_token_calls_github_anonymously(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no .env here, so load_dotenv() finds no token
+    calls = _fake_github(monkeypatch, lambda path: _pr_json(), token="")
+    assert resolve("psf/requests#42").number == 42
+    assert calls == [("/repos/psf/requests/pulls/42", None)]
 
 
 def test_materialize_refuses_huge_repos(tmp_path):

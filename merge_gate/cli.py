@@ -99,6 +99,23 @@ def _cmd_owner_tests(args: argparse.Namespace) -> int:
     return 0 if gone else 1
 
 
+def _cmd_github(args: argparse.Namespace) -> int:
+    """Resolve a live GitHub PR, clone it and run the gate; progress on stderr, verdict JSON on stdout."""
+    from .github_pr import scan
+
+    def progress(name, status, data):
+        extra = (f" {data['ms']}ms" if "ms" in data else "") + (f" {data['url']}" if "url" in data else "")
+        print(f"[merge-gate] {name} {status}{extra}", file=sys.stderr)
+
+    report, pr, resolved = scan(args.query, use_llm=_use_llm(args), use_subq=_use_subq(args), on_stage=progress)
+    print(f"[merge-gate] {resolved.html_url} -> {pr.pr_id} (clone: {pr.repo_path})", file=sys.stderr)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(report.to_json())
+    print(report.to_json())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="merge-gate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -186,18 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "github":
-        from .github_pr import scan
-
-        def progress(name, status, data):
-            print(f"[merge-gate] {name} {status}" + (f" {data['ms']}ms" if "ms" in data else "") + (f" {data['url']}" if "url" in data else ""), file=sys.stderr)
-
-        report, pr, resolved = scan(args.query, use_llm=_use_llm(args), use_subq=_use_subq(args), on_stage=progress)
-        print(f"[merge-gate] {resolved.html_url} -> {pr.pr_id} (clone: {pr.repo_path})", file=sys.stderr)
-        if args.out:
-            with open(args.out, "w", encoding="utf-8") as f:
-                f.write(report.to_json())
-        print(report.to_json())
-        return 0
+        return _cmd_github(args)
 
     if args.cmd == "validate":
         with open(args.path, encoding="utf-8") as f:
