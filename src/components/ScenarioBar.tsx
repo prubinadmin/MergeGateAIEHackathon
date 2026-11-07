@@ -37,7 +37,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
   onGitHubPrAnalyzed
 }) => {
   const [githubUrl, setGithubUrl] = useState(
-    'https://github.com/prubinadmin/MergeGateAIEHackathon/blob/main/test_cases/02_performance_latency_slowdown.py'
+    'https://github.com/vllm-project/vllm/pull/66322'
   );
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -47,7 +47,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
   const handleAnalyzeUrl = async (urlToAnalyze?: string) => {
     const targetUrl = (urlToAnalyze ?? githubUrl).trim();
     if (!targetUrl) {
-      setErrorMsg('Please paste a public GitHub URL (PR, Commit, File, Directory, or Repository).');
+      setErrorMsg('Please paste a public GitHub Pull Request URL (e.g. https://github.com/vllm-project/vllm/pull/66322).');
       return;
     }
 
@@ -58,9 +58,9 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
     try {
       const analyzedPr = await analyzeGitHubUrl(targetUrl);
       onGitHubPrAnalyzed(analyzedPr);
-      setLastAnalyzedMsg(`Fetched & analyzed ${analyzedPr.repo} (${analyzedPr.diffSummary})`);
+      setLastAnalyzedMsg(`Fetched & analyzed ${analyzedPr.id} from ${analyzedPr.repo} (${analyzedPr.diffSummary})`);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Failed to fetch from GitHub. Ensure the link is a public GitHub URL.');
+      setErrorMsg(err?.message || 'Failed to fetch Pull Request from GitHub. Ensure the link is a public GitHub PR URL.');
     } finally {
       setIsAnalyzing(false);
     }
@@ -73,13 +73,13 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
 
   return (
     <div className="bg-slate-900 border-b border-slate-800 px-6 py-3 space-y-3">
-      {/* Row 1: Live Public GitHub Link Input Bar */}
+      {/* Row 1: Live Public GitHub PR Analyzer Bar */}
       <div className="rounded-lg border border-indigo-500/30 bg-slate-950/90 p-3 shadow-inner">
         <form onSubmit={handleFormSubmit} className="flex flex-col lg:flex-row items-stretch lg:items-center gap-2.5">
           <div className="flex items-center gap-2 shrink-0">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-semibold">
               <Link2 className="w-3.5 h-3.5 text-indigo-400" />
-              Live GitHub Analyzer
+              Live GitHub PR Analyzer
             </span>
           </div>
 
@@ -91,7 +91,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
                 setGithubUrl(e.target.value);
                 if (errorMsg) setErrorMsg(null);
               }}
-              placeholder="Paste any public GitHub URL (e.g. https://github.com/owner/repo/pull/12, /commit/sha, or /blob/main/file.py)..."
+              placeholder="Paste any public GitHub PR link (e.g. https://github.com/vllm-project/vllm/pull/66322)..."
               className="w-full bg-slate-900 border border-slate-700/80 focus:border-indigo-500 focus:outline-none rounded-md pl-3 pr-3 py-1.5 text-xs font-mono text-slate-100 placeholder:text-slate-500"
             />
           </div>
@@ -105,12 +105,12 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
               {isAnalyzing ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Fetching GitHub...</span>
+                  <span>Fetching PR...</span>
                 </>
               ) : (
                 <>
                   <Search className="w-3.5 h-3.5" />
-                  <span>Analyze GitHub Link</span>
+                  <span>Analyze GitHub PR</span>
                 </>
               )}
             </button>
@@ -119,21 +119,21 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
               type="button"
               onClick={() => setShowPresets(prev => !prev)}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700/80 text-xs font-medium transition-colors cursor-pointer"
-              title="Toggle sample public GitHub URLs"
+              title="Toggle sample public GitHub PR links"
             >
               <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span className="hidden sm:inline">Sample Links</span>
+              <span className="hidden sm:inline">Sample PRs</span>
               {showPresets ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
           </div>
         </form>
 
-        {/* Quick Preset Public GitHub Links */}
+        {/* Quick Preset Public GitHub PR Links */}
         {showPresets && (
           <div className="mt-2.5 pt-2.5 border-t border-slate-800/80">
             <div className="text-[11px] text-slate-400 mb-1.5 flex items-center justify-between">
-              <span>Click any live public GitHub link below to fetch &amp; run defect analysis:</span>
-              <span className="font-mono text-slate-500">Supports PRs · Commits · Files · Directories · Repos</span>
+              <span>Click any live public GitHub Pull Request below to fetch its diff files &amp; run defect analysis:</span>
+              <span className="font-mono text-slate-500">Format: https://github.com/owner/repo/pull/123</span>
             </div>
             <div className="flex flex-wrap gap-1.5">
               {SAMPLE_GITHUB_LINKS.map((item) => (
@@ -173,7 +173,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
               <span>{lastAnalyzedMsg}</span>
             </div>
             <span className="text-[11px] font-mono text-slate-400">
-              Inspect findings in Gate Pipeline &amp; Diff Inspector below
+              Inspect PR findings in Gate Pipeline &amp; Diff Inspector below
             </span>
           </div>
         )}
@@ -183,7 +183,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
           <span className="text-xs font-medium text-slate-400 whitespace-nowrap mr-1">
-            Scenarios &amp; History:
+            Demo Scenarios:
           </span>
           {scenarios.map(pr => {
             const isSelected = pr.id === selectedPr.id;
@@ -215,7 +215,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-slate-950/60 text-slate-400 hover:text-slate-200 border border-dashed border-slate-800 hover:border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Sliders className="w-3.5 h-3.5" />
-            <span>Custom Diff</span>
+            <span>Custom PR</span>
           </button>
         </div>
 
