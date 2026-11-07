@@ -16,7 +16,6 @@ import { ContractJsonViewer } from './components/ContractJsonViewer';
 import { LearningTrackView } from './components/LearningTrackView';
 import { StarterCodeView } from './components/StarterCodeView';
 import { CustomPrModal } from './components/CustomPrModal';
-import { TestCasesView } from './components/TestCasesView';
 
 import { DEMO_SCENARIOS } from './services/scenarios';
 import { calculateOwnerAttribution } from './services/ownerDiscovery';
@@ -36,7 +35,7 @@ import {
 } from './types/mergeGate';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'diff' | 'phone' | 'learning' | 'test-suite' | 'starter-code'>('pipeline');
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'diff' | 'phone' | 'learning' | 'starter-code'>('pipeline');
   const [scenarios, setScenarios] = useState<PullRequest[]>(DEMO_SCENARIOS);
   const [selectedPr, setSelectedPr] = useState<PullRequest>(DEMO_SCENARIOS[0]);
   const [owners, setOwners] = useState<CodeOwner[]>([]);
@@ -239,10 +238,6 @@ export default function App() {
             </div>
             <DiffViewer pr={selectedPr} violations={antiGamingViolations} />
           </div>
-        )}
-
-        {activeTab === 'test-suite' && (
-          <TestCasesView />
         )}
 
         {activeTab === 'learning' && (
