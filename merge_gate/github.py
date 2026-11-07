@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .llm import load_dotenv
@@ -85,6 +86,31 @@ def default_branch(repo: str) -> str:
 
 def open_pr(repo: str, head: str, base: str, title: str, body: str) -> dict:
     return _call("POST", f"/repos/{repo}/pulls", {"title": title, "head": head, "base": base, "body": body})
+
+
+def pulls_for_commit(repo: str, sha: str) -> list:
+    return _call("GET", f"/repos/{repo}/commits/{sha}/pulls")
+
+
+def statuses(repo: str, sha: str) -> list:
+    """Latest status per context on <sha>."""
+    return _call("GET", f"/repos/{repo}/commits/{sha}/status").get("statuses", [])
+
+
+def branch_exists(repo: str, branch: str) -> bool:
+    try:
+        _call("GET", f"/repos/{repo}/git/ref/heads/{branch}")
+        return True
+    except GitHubError as e:
+        if "HTTP 404" in str(e):
+            return False
+        raise
+
+
+def open_pr_for_branch(repo: str, branch: str) -> dict | None:
+    head = urllib.parse.quote(f"{repo.split('/')[0]}:{branch}", safe=":/")
+    prs = _call("GET", f"/repos/{repo}/pulls?state=open&head={head}")
+    return prs[0] if prs else None
 
 
 def status_line(report: VerdictReport) -> str:

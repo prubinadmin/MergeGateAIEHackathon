@@ -105,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     rb.add_argument("--repo", default=".", help="path to the repo; run the gate from a different, clean directory")
     rb.add_argument("--push", action="store_true", help="push the revert branch and open a PR (needs --github, GITHUB_TOKEN)")
     rb.add_argument("--github", default="", help="owner/repo on GitHub")
+    rb.add_argument("--base", default=None, help="verify <base>..<sha> as one diff (a push's `before`; all-zero -> <sha>^1)")
+    rb.add_argument("--respect-override", action=argparse.BooleanOptionalAction, default=True,
+                    help="skip a PR a code owner overrode (looked up on GitHub; default on)")
     _llm_flags(rb)
 
     s = sub.add_parser("serve", help="HTTP API for the web UI and the iMessage webhook")
@@ -172,10 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "rollback":
         from .rollback import main as rollback_main
 
-        if args.push and not args.github:
-            print("--push needs --github owner/repo", file=sys.stderr)
-            return 2
-        return rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github)
+        return rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github, args.base, args.respect_override)
 
     if args.cmd == "serve":
         from .serve import serve
