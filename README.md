@@ -60,6 +60,30 @@ To enforce on a repo: copy `templates/merge-gate.yml` to `.github/workflows/`, a
 secret, and make `merge-gate` a required status check. BLOCK -> failure, REVIEW -> pending,
 PASS -> success. Only a code owner's GitHub approval (`OWNER_GITHUB` variable) overrides a finding.
 
+### Rollback
+
+Something already landed? Re-verify it with the same rules, owners and Muse flags as a PR
+(base = `<sha>^1`, head = `<sha>`; works for merge commits and plain commits):
+
+```bash
+python -m merge_gate rollback <sha> [--repo PATH]                       # BLOCK -> local branch merge-gate/revert-<sha>
+python -m merge_gate rollback <sha> --push --github owner/repo          # also push it and open a revert PR (GITHUB_TOKEN)
+python -m merge_gate rollback <sha> --base <before>                     # verify a multi-commit push as one diff
+```
+
+PASS/REVIEW does nothing and says why. Skipped (exit 0): Merge Gate's own reverts (no revert-of-revert
+loop), root commits, and PRs a code owner overrode on GitHub (`--no-respect-override` to revert anyway;
+needs GITHUB_TOKEN + `--github`, else it warns and proceeds). When the PR is found on GitHub, its body
+and author are the gate's inputs, the same as in the PR run. The revert is built in a temporary
+`git worktree`, so your checkout is never touched; it never pushes to the default branch and never
+force-pushes; a failed push/PR leaves no local branch, and a remote branch from an earlier attempt is
+reused. Each run logs the verdict (source `rollback`) and a `rollback` action record on the same hash chain.
+
+To run it on every push to main: `templates/merge-gate-rollback.yml`. A PR opened with the Actions
+`GITHUB_TOKEN` does not trigger `pull_request` workflows, so if `merge-gate` is a required check the
+revert PR could never pass it. Add a fine-grained PAT as secret `MERGE_GATE_TOKEN` (Contents + Pull
+requests: write, Commit statuses: read); the template uses `${{ secrets.MERGE_GATE_TOKEN || secrets.GITHUB_TOKEN }}`.
+
 ### 3. War Room UI (live, real gate) and the concept simulator
 ```bash
 python -m merge_gate serve           # terminal 1: the real gate's API on 127.0.0.1:8787
