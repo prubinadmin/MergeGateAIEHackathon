@@ -1,7 +1,9 @@
 """`python -m merge_gate serve`: HTTP API over the real gate, for the web UI and the iMessage webhook.
 
   GET  /api/health
-  GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo)
+  GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo; or, with
+                                      MERGE_GATE_DEMO_GITHUB=owner/name, that repo's open PRs, and each
+                                      verdict is published back to the PR)
   POST /api/verify   {"pr_id": "demo-1"}                 -> verdict report (real rules, blame, sandbox, Muse)
        or          {"repo_path", "base_ref", "head_ref", "issue_text", "title", "opened_by", "pr_id"}
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
@@ -49,11 +51,17 @@ class State:
         self.notifier = imessage.notifier_from_env()
         # phone_key -> the PR that number was last messaged about (so a bare "BLOCK" reply has a target)
         self.threads: dict[str, dict] = {}
+        # MERGE_GATE_DEMO_GITHUB=owner/name: demo cases are that repo's open PRs, and verdicts go back to them.
+        self.github_repo = os.environ.get("MERGE_GATE_DEMO_GITHUB", "").strip()
+        self.github_prs: dict[str, object] = {}  # pr_id -> demo_github.GithubPr
+        self.published: dict[str, str] = {}  # pr_id -> what was posted to GitHub (or why not)
         # agentic paging: every verdict texts the code owner on its own (MERGE_GATE_AUTO_PAGE=0 turns it off)
         self.auto_page = os.environ.get("MERGE_GATE_AUTO_PAGE", "1") != "0"
         self._paged: set[tuple[str, str]] = set()  # (pr_id, run_hash): never re-page an identical result
 
-    def demo(self) -> list[PullRequest]:
+    def demo(self, refresh: bool = False) -> list[PullRequest]:
+        if self.github_repo:
+            return self._github_demo(refresh)
         with self.lock:
             if not self._demo_ready:
                 repo = build_demo_repo(DEMO_ROOT)
@@ -61,6 +69,36 @@ class State:
                     self.prs[pr.pr_id] = pr
                 self._demo_ready = True
         return [p for k, p in self.prs.items() if k.startswith("demo-")]
+
+    def _github_demo(self, refresh: bool) -> list[PullRequest]:
+        from . import demo_github
+
+        with self.lock:
+            if refresh or not self._demo_ready:
+                path = demo_github.sync(self.github_repo)
+                found = demo_github.open_prs(self.github_repo, path)
+                self.github_prs = {g.pr.pr_id: g for g in found}
+                for k in [k for k in self.prs if k.startswith("demo-")]:
+                    del self.prs[k]
+                for g in found:
+                    self.prs[g.pr.pr_id] = g.pr
+                self._demo_ready = True
+            return [self.github_prs[k].pr for k in self.github_prs]
+
+    def publish(self, report: VerdictReport) -> None:
+        """Post the verdict to the real GitHub PR (merge-gate status + comment), when this case is one."""
+        g = self.github_prs.get(report.pr_id)
+        if not g:
+            return
+        from . import github
+
+        try:
+            github.publish(report, self.github_repo, g.number, sha=g.sha)
+            note = f"posted {github.STATE_FOR[report.verdict]} to {g.url}"
+        except github.GitHubError as e:
+            note = f"not posted to GitHub: {e}"
+        self.published[report.pr_id] = note
+        store.append("github_publish", {"pr_id": report.pr_id, "note": note})
 
     def verify(self, body: dict, on_stage=None, steps=None, source: str = "api",
                started: float | None = None) -> VerdictReport:
@@ -90,6 +128,7 @@ class State:
         with self.lock:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
+        self.publish(report)
         if self.auto_page and report.owners:
             if on_stage:
                 on_stage("page", "start", {})
@@ -271,8 +310,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/demo":
                     return self._send(200, [
                         {"pr_id": p.pr_id, "title": p.title, "issue_text": p.issue_text, "opened_by": p.opened_by,
-                         "files": p.changed_files(), "diff": p.diff()}
-                        for p in state.demo()
+                         "files": p.changed_files(), "diff": p.diff(),
+                         "github_url": getattr(state.github_prs.get(p.pr_id), "url", "")}
+                        for p in state.demo(refresh=True)
                     ])
                 if self.path == "/api/log":
                     ok, bad = store.verify_chain()
@@ -342,15 +382,16 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 if urllib.parse.urlparse(self.path).path == "/api/sendblue":
                     return self._sendblue(body)
                 if self.path == "/api/reply":
-                    # Owner replies from a phone come through /api/sendblue (token + owner's verified number).
-                    # This endpoint is only for the War Room page on the presenter's laptop: without an allowed
-                    # browser Origin, anyone on the machine could curl a fake BLOCK or FALSE ALARM.
-                    if self.headers.get("Origin") not in ALLOWED_ORIGINS:
-                        store.append("reply_rejected", {"pr_id": body.get("pr_id"), "reason": "not from the War Room UI"})
-                        return self._send(403, {"error": "replies are accepted only from the War Room UI; phones use /api/sendblue"})
                     r = state.report(body["pr_id"])
                     reply = parse_reply(body.get("text", ""))
                     action = handle_reply(r, reply, body.get("pr_url", ""))
+                    # Owner replies from a phone come through /api/sendblue (token + owner's verified number).
+                    # A reply that changes an outcome (BLOCK fails a PR's check, FALSE ALARM feeds the learner)
+                    # is only taken here from the War Room page on the presenter's laptop: without an allowed
+                    # browser Origin, anyone on the machine could curl one. WHY and OK only answer with text.
+                    if action.kind in ("block_pr", "log_false_alarm") and self.headers.get("Origin") not in ALLOWED_ORIGINS:
+                        store.append("reply_rejected", {"pr_id": r.pr_id, "command": reply.command, "reason": "not from the War Room UI"})
+                        return self._send(403, {"error": "replies are accepted only from the War Room UI; phones use /api/sendblue"})
                     if action.kind == "teach":  # runs model-written code: only the verified phone (/api/sendblue) may
                         return self._send(403, {"error": "teach requires a verified owner (reply by iMessage)"})
                     if action.kind == "forget":

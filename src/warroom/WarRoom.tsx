@@ -350,6 +350,11 @@ export default function WarRoom() {
                     <Play size={14} /> {running === pr.pr_id ? 'Running…' : r ? 'Run again' : 'Run the gate'}
                   </button>
                   <button onClick={() => setShowDiff((s) => !s)} className="text-[12.5px] text-zinc-400 hover:text-zinc-200">{showDiff ? 'Hide diff' : 'View diff'}</button>
+                  {pr.github_url && (
+                    <a href={pr.github_url} target="_blank" rel="noreferrer" className="text-[12.5px] text-amber-300 hover:text-amber-200">
+                      Open on GitHub ↗
+                    </a>
+                  )}
                 </div>
                 {showDiff && (
                   <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-black/60 p-3 text-[11.5px] leading-relaxed">
