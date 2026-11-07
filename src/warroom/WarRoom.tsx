@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, CircleCheck, GitPullRequest, Hash, Lock, Play, ShieldCheck, Smartphone } from 'lucide-react';
+import { ChevronRight, CircleCheck, GitPullRequest, Hash, Loader2, Lock, Play, Send, ShieldCheck, Smartphone } from 'lucide-react';
+import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
   API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, postReply, runGate,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, runGate,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -16,9 +17,10 @@ interface CaseState {
   chainOk: boolean | null;
   bubbles: Bubble[];
   ownerBlocked: boolean;
+  startedAt: number;
 }
 
-const EMPTY: CaseState = { stages: {}, report: null, error: '', clock: 0, chainOk: null, bubbles: [], ownerBlocked: false };
+const EMPTY: CaseState = { stages: {}, report: null, error: '', clock: 0, chainOk: null, bubbles: [], ownerBlocked: false, startedAt: 0 };
 const now = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 
 function nodeStates(c: CaseState): Record<NodeKey, StageStatus> {
@@ -46,7 +48,7 @@ const sevChip = (e: Evidence) =>
 function StatsBar({ stats, llm }: { stats: Stats | null; llm: boolean | null }) {
   const n = (v: number | undefined | null) => (v === undefined || v === null ? '–' : v);
   return (
-    <div className="mx-6 mt-4 rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-3 flex flex-wrap items-center gap-x-7 gap-y-2 text-[13px]">
+    <div className="mx-6 mt-4 rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-3 flex flex-wrap items-center gap-x-7 gap-y-2 text-[13px] tabular-nums">
       <span className="flex items-center gap-2 font-mono text-[12px] text-amber-400"><span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />LIVE</span>
       <span><b className="text-lg text-zinc-100 mr-1.5">{n(stats?.checked)}</b><span className="text-zinc-400">PRs checked</span></span>
       <span><b className="text-lg text-red-400 mr-1.5">{n(stats?.blocked)}</b><span className="text-zinc-400">blocked</span></span>
@@ -62,6 +64,19 @@ function StatsBar({ stats, llm }: { stats: Stats | null; llm: boolean | null }) 
       </span>
     </div>
   );
+}
+
+// Owns its own 100ms tick so only the clock re-renders. It must keep moving during long stages
+// (Muse Spark can take a minute), or the demo looks frozen.
+function CaseClock({ startedAt, clock, running }: { startedAt: number; clock: number; running: boolean }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setTick((x) => x + 1), 100);
+    return () => clearInterval(t);
+  }, [running]);
+  const shown = running && startedAt ? Math.max(clock, (Date.now() - startedAt) / 1000) : clock;
+  return <div className="font-mono text-lg text-zinc-100 tabular-nums">T+{shown.toFixed(1)}s</div>;
 }
 
 function Lane({ title, ev, children }: { title: string; ev?: StageEvent; children?: React.ReactNode }) {
@@ -129,6 +144,10 @@ export default function WarRoom() {
   const [showDiff, setShowDiff] = useState(false);
   const [showWhy, setShowWhy] = useState(true);
   const [replyBusy, setReplyBusy] = useState(false);
+  const [paging, setPaging] = useState<Record<string, { status: 'sending' | 'sent' | 'error'; note: string }>>({});
+
+  const cancelRun = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelRun.current?.(), []);
 
   const refreshStats = useCallback(() => getStats().then(setStats).catch(() => {}), []);
 
@@ -147,17 +166,22 @@ export default function WarRoom() {
     if (running) return;
     setSel(id);
     setRunning(id);
-    setCases((all) => ({ ...all, [id]: { ...EMPTY } }));
-    runGate(id, useLlm, (ev: RunEvent) => {
+    setCases((all) => ({ ...all, [id]: { ...EMPTY, startedAt: Date.now() } }));
+    setPaging((all) => { const { [id]: _, ...rest } = all; return rest; });
+    // freeze the clock at whichever is later so it never jumps backward when the run ends
+    const final = (c: CaseState, t: number) => Math.max(t, (Date.now() - c.startedAt) / 1000);
+    cancelRun.current = runGate(id, useLlm, (ev: RunEvent) => {
       if (ev.type === 'stage') patch(id, (c) => ({ ...c, clock: ev.t, stages: { ...c.stages, [ev.stage]: ev } }));
       else if (ev.type === 'report') {
-        patch(id, (c) => ({ ...c, clock: ev.t, report: ev.report, chainOk: ev.chain_ok }));
+        patch(id, (c) => ({ ...c, clock: final(c, ev.t), report: ev.report, chainOk: ev.chain_ok }));
         setRunning('');
+        cancelRun.current = null;
         refreshStats();
         getMessage(id).then((m) => patch(id, (c) => ({ ...c, bubbles: [{ from: 'gate', text: m.text, at: now() }] })));
       } else if (ev.type === 'error') {
-        patch(id, (c) => ({ ...c, error: ev.error }));
+        patch(id, (c) => ({ ...c, clock: final(c, c.clock), error: ev.error }));
         setRunning('');
+        cancelRun.current = null;
       }
     });
   }, [running, useLlm, refreshStats]);
@@ -179,6 +203,21 @@ export default function WarRoom() {
     }
   };
 
+  const page = async (id: string) => {
+    setPaging((all) => ({ ...all, [id]: { status: 'sending', note: '' } }));
+    try {
+      const m = await pageOwner(id, '');
+      const next = !m.sent
+        ? { status: 'error' as const, note: 'Nothing sent: this PR has no code owner on file.' }
+        : m.sent.startsWith('console-')
+          ? { status: 'sent' as const, note: 'No Sendblue keys on the server: printed to its console instead' }
+          : { status: 'sent' as const, note: `Delivered to Sendblue for ${m.to?.name}` };
+      setPaging((all) => ({ ...all, [id]: next }));
+    } catch (e) {
+      setPaging((all) => ({ ...all, [id]: { status: 'error', note: (e as Error).message } }));
+    }
+  };
+
   const pr = prs.find((p) => p.pr_id === sel);
   const c = cases[sel] || EMPTY;
   const r = c.report;
@@ -193,7 +232,7 @@ export default function WarRoom() {
   const owners = (c.stages.owners?.owners || r?.owners || []) as Report['owners'];
 
   return (
-    <div className="min-h-screen bg-[#0a0a0b] text-zinc-100">
+    <div className="flex-1 bg-[#0a0a0b] text-zinc-100">
       {apiDown && <div className="bg-red-950/60 border-b border-red-900 px-6 py-2 text-[13px] text-red-200 font-mono">{apiDown}</div>}
       <StatsBar stats={stats} llm={llm} />
 
@@ -218,14 +257,16 @@ export default function WarRoom() {
             </label>
             <div className="text-right">
               <div className="font-mono text-[10.5px] tracking-wider text-zinc-500">CASE CLOCK · REAL TIME</div>
-              <div className="font-mono text-lg text-zinc-100">T+{c.clock.toFixed(1)}s</div>
+              <CaseClock startedAt={c.startedAt} clock={c.clock} running={running === sel} />
             </div>
           </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[560px_minmax(0,1fr)] xl:grid-cols-[560px_minmax(0,1fr)_312px] gap-5 p-5">
-          <div>
-            <AgentGraph states={nodeStates(c)} verdict={r?.verdict || null} running={running === sel} />
+          <div className="min-w-0">
+            <div className="overflow-x-auto">
+              <AgentGraph states={nodeStates(c)} verdict={r?.verdict || null} running={running === sel} />
+            </div>
             <div className="mt-4 flex items-center gap-2 text-[14px] text-zinc-300">
               <span className={`w-2 h-2 rounded-full ${r ? (r.verdict === 'BLOCK' ? 'bg-red-500' : r.verdict === 'PASS' ? 'bg-emerald-500' : 'bg-sky-500') : 'bg-zinc-600'}`} />
               {!r && running !== sel && 'Pick a PR and run the gate.'}
@@ -264,7 +305,8 @@ export default function WarRoom() {
 
             {c.error && <div className="rounded-xl border border-red-900 bg-red-950/40 px-4 py-3 text-[13px] text-red-200 font-mono">{c.error}</div>}
 
-            <div className={`rounded-xl border px-4 py-4 ${r ? verdictColor(r.verdict).replace(/text-\S+/, '') : 'border-zinc-800'} bg-zinc-900/30`}>
+            <div className={`relative overflow-hidden rounded-xl border px-4 py-4 transition-colors duration-200 ${r ? verdictColor(r.verdict).replace(/text-\S+/, '') : 'border-zinc-800'} bg-zinc-900/30`}>
+              {running === sel && <BorderBeam size={120} duration={4} colorFrom="#f59e0b" colorTo="#fde68a" />}
               <div className="flex items-center gap-4">
                 <span className={`rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(r?.verdict)}`}>{r?.verdict || '—'}</span>
                 <div className="text-[13.5px] text-zinc-300">
@@ -376,6 +418,20 @@ export default function WarRoom() {
 
           <div className="lg:col-span-2 xl:col-span-1">
             <Phone owner={r?.owners[0]?.name} c={c} onReply={reply} busy={replyBusy} />
+            <div className="mx-auto mt-3 w-[300px]">
+              <button onClick={() => page(sel)} disabled={!r || r.verdict === 'PASS' || paging[sel]?.status === 'sending'}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 text-[13px] font-semibold text-amber-200 transition-colors duration-150 hover:bg-amber-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-35">
+                {paging[sel]?.status === 'sending' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                {paging[sel]?.status === 'sending' ? 'Paging…' : `Page ${r?.owners[0]?.name || 'the owner'}'s real phone`}
+              </button>
+              {paging[sel] && paging[sel].status !== 'sending' && (
+                <div role="status" className={`mt-2 flex items-start gap-1.5 text-[12px] ${paging[sel].status === 'sent' ? 'text-emerald-300' : 'text-red-300'}`}>
+                  {paging[sel].status === 'sent' ? <Smartphone size={13} className="mt-0.5 shrink-0" /> : <Lock size={13} className="mt-0.5 shrink-0" />}
+                  {paging[sel].note}
+                </div>
+              )}
+              {!r && <div className="mt-2 text-[11.5px] text-zinc-500">Run the gate first; only a BLOCK or REVIEW pages the owner.</div>}
+            </div>
             {c.ownerBlocked && (
               <div className="mx-auto mt-3 w-[300px] rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-2 text-[12px] text-red-200 flex items-center gap-2">
                 <Lock size={14} /> merge-gate check: failure · blocked by {r?.owners[0]?.name} from their phone

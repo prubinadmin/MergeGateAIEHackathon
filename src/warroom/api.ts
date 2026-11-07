@@ -87,7 +87,13 @@ export const getDemo = () => j<DemoPr[]>('/api/demo');
 export const getStats = () => j<Stats>('/api/stats');
 export const getMessage = (pr_id: string) =>
   j<{ to: Owner | null; text: string }>('/api/message', { method: 'POST', body: JSON.stringify({ pr_id }) });
-export const postReply = (pr_id: string, text: string, github?: { repo: string; number: number }) =>
+/** Sends the verdict to the code owner's real phone (Sendblue on the server; console if no keys). */
+export const pageOwner = (pr_id: string, pr_url = '', github?: { repo: string; number: number }) =>
+  j<{ to: Owner | null; text: string; sent: string | null }>('/api/message', {
+    method: 'POST',
+    body: JSON.stringify({ pr_id, pr_url, github, send: true }),
+  });
+export const postReply =(pr_id: string, text: string, github?: { repo: string; number: number }) =>
   j<{ command: string; action: string; text: string; github_blocked: boolean }>('/api/reply', {
     method: 'POST',
     body: JSON.stringify({ pr_id, text, github }),
