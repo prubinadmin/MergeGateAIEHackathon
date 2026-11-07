@@ -235,6 +235,17 @@ def test_squash_of_logged_revert_is_skipped(repo):
     assert result["action"] == "skip" and result["verdict"] is None and revert_branches(repo) == [branch]
 
 
+def test_evil_merge_of_logged_revert_is_re_verified(repo):
+    # the merge's second parent is the genuine revert, but the merge itself smuggles in an extra change
+    sha = merge(repo, "pr/demo-1")
+    branch = rollback.rollback(repo, sha)["branch"]
+    git(repo, "merge", "-q", "--no-ff", "--no-commit", branch)
+    git(repo, "rm", "-q", "-f", "tests/test_pricing.py")
+    git(repo, "commit", "-q", "-m", f"Merge pull request #7 from o/{branch}\n\nRevert", author=("Mallory", "m@example.com"))
+    result = rollback.rollback(repo, out(repo, "rev-parse", "HEAD"))
+    assert result["action"] == "revert_branch" and result["verdict"] == "BLOCK" and "no logged revert matches" in result["note"]
+
+
 def test_forged_gate_revert_is_re_verified(repo, caplog):
     # the message is attacker-controlled: a direct push that only claims to be a gate revert must not be skipped
     git(repo, "rm", "-q", "tests/test_pricing.py")

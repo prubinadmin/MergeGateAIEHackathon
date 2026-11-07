@@ -213,18 +213,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "rollback":
         import logging
 
-        from .rollback import PreflightError, rollback, summary
+        from .rollback import main as rollback_main
 
         logging.basicConfig(format="[merge-gate] %(levelname)s: %(message)s")  # rollback's warnings -> stderr
-        try:
-            result = rollback(args.repo, args.sha, use_llm=_use_llm(args), push=args.push, github_repo=args.github,
-                              base=args.base, respect_override=args.respect_override)
-        except PreflightError as e:
-            print(f"[merge-gate] {e}", file=sys.stderr)
-            return 2
-        print(json.dumps(result, indent=2))
-        print(summary(result), file=sys.stderr)
-        return 1 if result["verdict"] == "BLOCK" else 0
+        code, out, err = rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github, args.base, args.respect_override)
+        sys.stdout.write(out)
+        print(err, file=sys.stderr)
+        return code
 
     if args.cmd == "serve":
         from .serve import serve

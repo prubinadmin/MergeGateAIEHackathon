@@ -15,6 +15,7 @@ PR stays a human decision.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import re
@@ -185,23 +186,20 @@ def _revert_ids(repo: str, branch: str) -> dict:
 
 
 def _logged_revert(repo: str, sha: str) -> bool:
-    """True if <sha> is a revert this gate made and logged, landed by rebase (the revert commit itself), merge
-    (its second parent is the revert commit) or squash (same parent as the revert, i.e. the blocked commit, and
-    the same tree). The commit message never counts on its own: anyone can write 'revert: Merge Gate blocked'.
-    A tree match alone is not enough either: an old revert's tree would let a forged rollback to a stale state
-    through."""
+    """True if <sha> is a revert this gate made and logged: the revert commit itself (rebase), or a commit whose
+    first parent is the blocked commit and whose tree is exactly the revert's (a squash, or a merge that adds
+    nothing). Nothing weaker counts: not the message (anyone can write 'revert: Merge Gate blocked'), not a
+    merge whose second parent is the revert (its tree may smuggle extra changes), not the tree alone (an old
+    revert's tree would let a rollback to a stale state through)."""
     from . import store
 
     reverts = [r["data"] for r in store.read(kind="rollback") if r["data"].get("revert_tree")]
     if not reverts:
         return False
     parents = _git(repo, "rev-list", "--parents", "-n", "1", sha).split()
-    for c in parents[:1] + parents[2:3]:  # the commit, and a merge commit's second parent
-        c_parents, tree = _git(repo, "rev-list", "--parents", "-n", "1", c).split()[1:], _git(repo, "rev-parse", f"{c}^{{tree}}")
-        for r in reverts:
-            if c == r.get("revert_sha") or (c_parents[:1] == [r["sha"]] and tree == r["revert_tree"]):
-                return True
-    return False
+    first_parent = parents[1] if len(parents) > 1 else ""
+    tree = _git(repo, "rev-parse", f"{sha}^{{tree}}")
+    return any(sha == r["revert_sha"] or (first_parent, tree) == (r["sha"], r["revert_tree"]) for r in reverts)
 
 
 def _lookup_pr(github_repo: str, sha: str, respect_override: bool) -> tuple[dict | None, str]:
@@ -302,9 +300,17 @@ def rollback(repo_path: str, sha: str, use_llm: bool = False, push: bool = False
     return _log(result, "revert_pr", reason, **published)
 
 
-def summary(result: dict) -> str:
-    """The CLI's one-line stderr summary: the verdict (or SKIPPED) and what rollback did."""
+def main(sha: str, repo_path: str, use_llm: bool, push: bool, github_repo: str,
+         base: str | None = None, respect_override: bool = True) -> tuple[int, str, str]:
+    """Run rollback for the CLI: (exit code, stdout text, stderr line); the CLI does the printing.
+    Exit 2: bad flags or no GitHub access; 1: BLOCK (a revert was made); 0: clean or skipped."""
+    try:
+        result = rollback(repo_path, sha, use_llm=use_llm, push=push, github_repo=github_repo,
+                          base=base, respect_override=respect_override)
+    except PreflightError as e:
+        return 2, "", f"[merge-gate] {e}"
     what = {"none": result["reason"], "skip": result["reason"],
             "revert_branch": f"created local branch {result['branch']}",
             "revert_pr": f"revert PR {result['pr_url']}" + (f" ({result['reason']})" if result["reason"] else "")}[result["action"]]
-    return f"[merge-gate] {result['verdict'] or 'SKIPPED'}: {what}"
+    err = f"[merge-gate] {result['verdict'] or 'SKIPPED'}: {what}"
+    return 1 if result["verdict"] == "BLOCK" else 0, json.dumps(result, indent=2) + "\n", err
