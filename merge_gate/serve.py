@@ -37,8 +37,9 @@ DEMO_ROOT = os.path.join("runs", "demo")
 
 
 class State:
-    def __init__(self, use_llm: bool) -> None:
+    def __init__(self, use_llm: bool, use_subq: bool = False) -> None:
         self.use_llm = use_llm
+        self.use_subq = use_subq  # SubQ routing; on only when SUBQ_API_KEY is set (decided by the CLI)
         self.reports: dict[str, VerdictReport] = {}
         self.prs: dict[str, PullRequest] = {}
         self.lock = threading.Lock()
@@ -76,8 +77,9 @@ class State:
             if pr is None:
                 raise KeyError(f"unknown pr_id {body.get('pr_id')!r}")
         use_llm = body.get("llm", self.use_llm)
+        use_subq = self.use_subq and body.get("subq", True)  # a request can turn SubQ off, never on without the server
         t0 = time.monotonic()
-        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage)
+        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage, use_subq=bool(use_subq))
         store.log_report(report, source="api", ms=int((time.monotonic() - t0) * 1000), llm=bool(use_llm))
         with self.lock:
             self.prs[pr.pr_id] = pr
@@ -187,7 +189,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                         "llm": state.use_llm,
                     })
                 if self.path == "/api/health":
-                    return self._send(200, {"ok": True, "llm": state.use_llm})
+                    return self._send(200, {"ok": True, "llm": state.use_llm, "subq": state.use_subq})
                 if self.path == "/api/demo":
                     return self._send(200, [
                         {"pr_id": p.pr_id, "title": p.title, "issue_text": p.issue_text, "opened_by": p.opened_by,
@@ -240,7 +242,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/message":
                     r = state.report(body["pr_id"])
                     text = format_message(r, body.get("pr_url", ""))
-                    out = {"to": r.owners[0].__dict__ if r.owners else None, "text": text, "sent": None}
+                    # text follows the report's urgency: "fyi" is a one-line FYI, "page" (or unassessed) the full message
+                    out = {"to": r.owners[0].__dict__ if r.owners else None, "text": text, "urgency": r.urgency or "page", "sent": None}
                     if body.get("send") and r.owners:
                         phone = imessage.phone_for(r.owners[0].email)
                         if not phone:
@@ -274,8 +277,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(host: str = "127.0.0.1", port: int = 8787, use_llm: bool = False) -> None:
-    state = State(use_llm)
+def serve(host: str = "127.0.0.1", port: int = 8787, use_llm: bool = False, use_subq: bool = False) -> None:
+    state = State(use_llm, use_subq)
     httpd = ThreadingHTTPServer((host, port), make_handler(state))
-    print(f"[merge-gate] API on http://{host}:{port}  (Muse Spark {'ON' if use_llm else 'OFF'})")
+    print(f"[merge-gate] API on http://{host}:{port}  (Muse Spark {'ON' if use_llm else 'OFF'}, SubQ {'ON' if use_subq else 'OFF'})")
     httpd.serve_forever()

@@ -24,6 +24,21 @@ HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 HALF_LIFE_DAYS = 365.0
 TEST_WEIGHT = 0.3
 INSERT_WINDOW = 3
+MIN_SHARE = 0.25  # blame share below this never receives the page or authority over the PR
+
+
+def is_opener(o: Owner, opened_by: str) -> bool:
+    """opened_by (a login) matches the owner's name or email local-part, case-insensitively."""
+    who = (opened_by or "").strip().lower()
+    if not who:
+        return False
+    local = (o.email or "").lower().split("@")[0]
+    return who in {(o.name or "").lower(), local, local.split("+")[-1]}  # 123+login@users.noreply.github.com
+
+
+def eligible(o: Owner, opened_by: str) -> bool:
+    """May this owner be routed to (and so authorized): a real blame share, and not the PR's own author."""
+    return o.score >= MIN_SHARE and not is_opener(o, opened_by)
 
 
 @dataclass

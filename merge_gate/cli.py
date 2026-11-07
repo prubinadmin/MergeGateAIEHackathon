@@ -55,6 +55,8 @@ def _llm_flags(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--llm", dest="llm", action="store_true", default=None,
                    help="force Muse Spark tests and summary (default: on when MUSE_API_KEY is set)")
     g.add_argument("--no-llm", dest="llm", action="store_false", help="rules and ownership only, no API calls")
+    parser.add_argument("--no-subq", dest="subq", action="store_false", default=True,
+                        help="never call SubQ for routing (default: on when SUBQ_API_KEY is set, independent of Muse)")
 
 
 def _use_llm(args: argparse.Namespace) -> bool:
@@ -63,6 +65,15 @@ def _use_llm(args: argparse.Namespace) -> bool:
 
     on = has_key() if args.llm is None else args.llm
     print(f"[merge-gate] Muse Spark {'ON' if on else 'OFF (no MUSE_API_KEY; rules + ownership only)'}", file=sys.stderr)
+    return on
+
+
+def _use_subq(args: argparse.Namespace) -> bool:
+    """SubQ routing runs iff SUBQ_API_KEY is present and --no-subq was not given; independent of Muse."""
+    from .subq import has_key
+
+    on = getattr(args, "subq", False) and has_key()
+    print(f"[merge-gate] SubQ routing {'ON' if on else 'OFF'}", file=sys.stderr)
     return on
 
 
@@ -129,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         from .bench import load_case
         from .verify import verify
 
-        print(verify(load_case(args.case).pr, use_llm=_use_llm(args)).to_json())
+        print(verify(load_case(args.case).pr, use_llm=_use_llm(args), use_subq=_use_subq(args)).to_json())
         return 0
 
     if args.cmd == "validate":
@@ -159,12 +170,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "ci":
         from .ci import main as ci_main
 
-        return ci_main(_use_llm(args), args.out, publish=not args.no_publish)
+        return ci_main(_use_llm(args), args.out, publish=not args.no_publish, use_subq=_use_subq(args))
 
     if args.cmd == "serve":
         from .serve import serve
 
-        serve(args.host, args.port, _use_llm(args))
+        serve(args.host, args.port, _use_llm(args), _use_subq(args))
         return 0
 
     if args.cmd == "log":
@@ -191,8 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         repo = build_demo_repo(root)
         prs = demo_prs(repo)
         with ThreadPoolExecutor(max_workers=len(prs)) as pool:
-            use = _use_llm(args)
-            results = list(pool.map(lambda p: verify(p, use_llm=use), prs))
+            use, subq_on = _use_llm(args), _use_subq(args)
+            results = list(pool.map(lambda p: verify(p, use_llm=use, use_subq=subq_on), prs))
         for pr, r in zip(prs, results):
             print(f"===== {pr.pr_id}: {pr.title} -> {r.verdict} (route to {r.owners[0].name if r.owners else '?'})")
             print(format_message(r))
@@ -227,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         use = False if args.stub else _use_llm(args)
 
         def run(c):
-            return stub_report(c.pr.pr_id) if args.stub else verify(c.pr, use_llm=use)
+            return stub_report(c.pr.pr_id) if args.stub else verify(c.pr, use_llm=use, use_subq=False)  # benchmark: no routing calls
 
         with ThreadPoolExecutor(max_workers=6) as pool:
             reports = {c.pr.pr_id: r for c, r in zip(cases, pool.map(run, cases))}

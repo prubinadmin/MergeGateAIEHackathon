@@ -52,6 +52,8 @@ class VerdictReport:
     route_confidence: float | None = None  # SubQ's confidence in owners[0]
     urgency: str = ""  # "page" | "fyi"; "" when not assessed
     urgency_p: float | None = None  # SubQ's probability of paging; None = plain-code fallback
+    blame_owner: str = ""  # owner_key() of the blame-top owner; always authorized, whoever SubQ routed to
+    opened_by: str = ""  # the PR's author; never authorized as a routed owner
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -74,7 +76,13 @@ class VerdictReport:
             route_confidence=d.get("route_confidence"),
             urgency=d.get("urgency", ""),
             urgency_p=d.get("urgency_p"),
+            blame_owner=d.get("blame_owner", ""),
+            opened_by=d.get("opened_by", ""),
         )
+
+
+def owner_key(o: Owner) -> str:
+    return o.email.lower() or o.name
 
 
 def validate(d: dict[str, Any]) -> None:

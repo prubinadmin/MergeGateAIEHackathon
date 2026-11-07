@@ -15,7 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from .schema import VerdictReport
+from .owners import eligible
+from .schema import Owner, VerdictReport, owner_key
 
 Command = Literal["BLOCK", "WHY", "OK", "FALSE_ALARM", "UNKNOWN"]
 ActionKind = Literal["block_pr", "send_text", "log_false_alarm", "none"]
@@ -73,7 +74,25 @@ def parse_reply(text: str) -> Reply:
     return Reply(cmd, text, " ".join(words[1:]) if cmd != "UNKNOWN" else "")
 
 
+def blame_order(owners: list[Owner]) -> list[Owner]:
+    """resolve_owners' ranking, recovered from scores whatever order routing left the list in."""
+    return sorted(owners, key=lambda o: (-o.score, -o.lines, o.email))
+
+
+def authorized_owners(report: VerdictReport) -> list[Owner]:
+    """Who may act on this PR. The blame-top owner always; SubQ's routed owners[0] only if eligible,
+    so a prompt-injected route can never hand authority to a 1-line author or the PR's own opener."""
+    if not report.owners:
+        return []
+    by_blame = blame_order(report.owners)
+    top = next((o for o in report.owners if owner_key(o) == report.blame_owner), by_blame[0])  # old reports: top share
+    routed = report.owners[0]
+    return [top] + ([routed] if routed is not top and eligible(routed, report.opened_by) else [])
+
+
 def format_message(report: VerdictReport, pr_url: str = "") -> str:
+    if report.urgency == "fyi" and report.verdict == "PASS":
+        return f"FYI: {report.pr_id} touched your code; gate says {report.verdict}, no action needed." + (f" {pr_url}" if pr_url else "")
     owner = report.owners[0].name if report.owners else "there"
     head = {
         "BLOCK": "Merge Gate BLOCKED a PR on your code",
