@@ -245,6 +245,7 @@ def test_reply_and_webhook_teach_and_forget_end_to_end(demo, monkeypatch):
     secret = "s" * 24
     monkeypatch.setenv("SENDBLUE_WEBHOOK_SECRET", secret)
     monkeypatch.setenv("OWNER_PHONES", json.dumps({PETER: "+15550100001"}))
+    monkeypatch.setenv("MERGE_GATE_AUTO_PAGE", "0")  # this test is about TEACH/FORGET, not the first page
     calls = model(monkeypatch, GOOD)
     state = serve.State(use_llm=False)
     state.notifier = imessage.ConsoleNotifier()  # never a real iMessage

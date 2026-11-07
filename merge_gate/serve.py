@@ -132,7 +132,13 @@ class State:
             return {**out, "error": f"no phone on file for {r.owners[0].email}"}
         key = (r.pr_id, r.run_hash)
         if dedupe and key in self._paged:
-            return {**out, "skipped": "already paged for this exact result"}
+            # Already texted (e.g. auto-paged right after the run). Still attach what the caller knows,
+            # such as the GitHub PR, so the owner's BLOCK reaches that PR's check.
+            thread = self.threads.setdefault(imessage.phone_key(phone), {"pr_id": r.pr_id, "pr_url": "", "github": {}})
+            if thread.get("pr_id") == r.pr_id:
+                thread["pr_url"] = pr_url or thread.get("pr_url", "")
+                thread["github"] = github or thread.get("github") or {}
+            return {**out, "skipped": "already paged for this exact result", "sent": "already sent"}
         out["sent"] = self.notifier.send(phone, text)
         self._paged.add(key)
         self.threads[imessage.phone_key(phone)] = {"pr_id": r.pr_id, "pr_url": pr_url, "github": github or {}}
@@ -320,7 +326,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     text = format_message(r, body.get("pr_url", ""))
                     out = {"to": r.owners[0].__dict__ if r.owners else None, "text": text, "sent": None}
                     if body.get("send") and r.owners:
-                        paged = state.page(r, body.get("pr_url", ""), body.get("github") or {})
+                        paged = state.page(r, body.get("pr_url", ""), body.get("github") or {}, dedupe=True)
                         if paged.get("error"):
                             return self._send(400, {**out, "error": paged["error"]})
                         out["sent"] = paged["sent"]
