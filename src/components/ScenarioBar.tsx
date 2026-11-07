@@ -72,13 +72,13 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
   };
 
   return (
-    <div className="bg-slate-900 border-b border-slate-800 px-6 py-3 space-y-3">
+    <div className="bg-neutral-950 border-b border-yellow-500/20 px-6 py-3 space-y-3">
       {/* Row 1: Live Public GitHub PR Analyzer Bar */}
-      <div className="rounded-lg border border-indigo-500/30 bg-slate-950/90 p-3 shadow-inner">
+      <div className="rounded-lg border border-yellow-500/40 bg-black p-3 shadow-inner">
         <form onSubmit={handleFormSubmit} className="flex flex-col lg:flex-row items-stretch lg:items-center gap-2.5">
           <div className="flex items-center gap-2 shrink-0">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-semibold">
-              <Link2 className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-yellow-400/15 border border-yellow-400/40 text-yellow-300 text-xs font-semibold">
+              <Link2 className="w-3.5 h-3.5 text-yellow-400" />
               Live GitHub PR Analyzer
             </span>
           </div>
@@ -92,7 +92,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
                 if (errorMsg) setErrorMsg(null);
               }}
               placeholder="Paste any public GitHub PR link (e.g. https://github.com/vllm-project/vllm/pull/66322)..."
-              className="w-full bg-slate-900 border border-slate-700/80 focus:border-indigo-500 focus:outline-none rounded-md pl-3 pr-3 py-1.5 text-xs font-mono text-slate-100 placeholder:text-slate-500"
+              className="w-full bg-neutral-950 border border-neutral-800 focus:border-yellow-400 focus:outline-none rounded-md pl-3 pr-3 py-1.5 text-xs font-mono text-neutral-100 placeholder:text-neutral-500"
             />
           </div>
 
@@ -100,7 +100,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
             <button
               type="submit"
               disabled={isAnalyzing}
-              className="flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
+              className="flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-md bg-yellow-400 hover:bg-yellow-300 disabled:opacity-50 text-black text-xs font-bold transition-all shadow-sm cursor-pointer"
             >
               {isAnalyzing ? (
                 <>
@@ -118,10 +118,10 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
             <button
               type="button"
               onClick={() => setShowPresets(prev => !prev)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700/80 text-xs font-medium transition-colors cursor-pointer"
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-neutral-950 hover:bg-neutral-900 text-yellow-300 border border-yellow-500/30 text-xs font-medium transition-colors cursor-pointer"
               title="Toggle sample public GitHub PR links"
             >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+              <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
               <span className="hidden sm:inline">Sample PRs</span>
               {showPresets ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
@@ -130,10 +130,10 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
 
         {/* Quick Preset Public GitHub PR Links */}
         {showPresets && (
-          <div className="mt-2.5 pt-2.5 border-t border-slate-800/80">
-            <div className="text-[11px] text-slate-400 mb-1.5 flex items-center justify-between">
+          <div className="mt-2.5 pt-2.5 border-t border-neutral-800">
+            <div className="text-[11px] text-neutral-400 mb-1.5 flex items-center justify-between">
               <span>Click any live public GitHub Pull Request below to fetch its diff files &amp; run defect analysis:</span>
-              <span className="font-mono text-slate-500">Format: https://github.com/owner/repo/pull/123</span>
+              <span className="font-mono text-neutral-500">Format: https://github.com/owner/repo/pull/123</span>
             </div>
             <div className="flex flex-wrap gap-1.5">
               {SAMPLE_GITHUB_LINKS.map((item) => (
@@ -145,10 +145,10 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
                     setGithubUrl(item.url);
                     handleAnalyzeUrl(item.url);
                   }}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/40 text-[11px] text-slate-300 transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-neutral-950 hover:bg-neutral-900 border border-neutral-800 hover:border-yellow-400/50 text-[11px] text-neutral-200 transition-colors cursor-pointer"
                   title={item.description}
                 >
-                  <span className="px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-300 font-mono text-[10px]">
+                  <span className="px-1.5 py-0.2 rounded bg-yellow-400/15 text-yellow-300 font-mono text-[10px]">
                     {item.badge}
                   </span>
                   <span className="font-mono">{item.label}</span>
@@ -167,12 +167,12 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
         )}
 
         {lastAnalyzedMsg && !errorMsg && (
-          <div className="mt-2 flex items-center justify-between gap-2 text-xs text-emerald-300 bg-emerald-950/30 border border-emerald-800/40 rounded px-2.5 py-1">
+          <div className="mt-2 flex items-center justify-between gap-2 text-xs text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded px-2.5 py-1">
             <div className="flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <CheckCircle2 className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
               <span>{lastAnalyzedMsg}</span>
             </div>
-            <span className="text-[11px] font-mono text-slate-400">
+            <span className="text-[11px] font-mono text-neutral-400">
               Inspect PR findings in Gate Pipeline &amp; Diff Inspector below
             </span>
           </div>
@@ -182,7 +182,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
       {/* Row 2: Scenario Switcher Tabs & PR Quick Details */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
-          <span className="text-xs font-medium text-slate-400 whitespace-nowrap mr-1">
+          <span className="text-xs font-medium text-neutral-400 whitespace-nowrap mr-1">
             Demo Scenarios:
           </span>
           {scenarios.map(pr => {
@@ -193,26 +193,26 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
                 onClick={() => onSelectPr(pr)}
                 className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap shrink-0 border cursor-pointer ${
                   isSelected
-                    ? 'bg-slate-800 text-white border-indigo-500/50 shadow-sm'
-                    : 'bg-slate-950/60 text-slate-400 hover:text-slate-200 border-slate-800 hover:border-slate-700'
+                    ? 'bg-neutral-900 text-yellow-300 border-yellow-400 shadow-sm'
+                    : 'bg-black text-neutral-400 hover:text-yellow-200 border-neutral-800 hover:border-yellow-500/40'
                 }`}
               >
                 {pr.authorType === 'agent' ? (
-                  <Bot className="w-3.5 h-3.5 text-amber-400" />
+                  <Bot className="w-3.5 h-3.5 text-yellow-400" />
                 ) : pr.authorType === 'external' ? (
-                  <User className="w-3.5 h-3.5 text-purple-400" />
+                  <User className="w-3.5 h-3.5 text-yellow-300" />
                 ) : (
-                  <GitPullRequest className="w-3.5 h-3.5 text-emerald-400" />
+                  <GitPullRequest className="w-3.5 h-3.5 text-yellow-400" />
                 )}
-                <span className="font-mono font-semibold text-slate-200">#{pr.number}</span>
-                <span className="max-w-[160px] truncate text-slate-400">{pr.title}</span>
+                <span className="font-mono font-semibold text-yellow-400">#{pr.number}</span>
+                <span className="max-w-[160px] truncate text-neutral-300">{pr.title}</span>
               </button>
             );
           })}
 
           <button
             onClick={onOpenCustomModal}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-slate-950/60 text-slate-400 hover:text-slate-200 border border-dashed border-slate-800 hover:border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-black text-yellow-400 hover:text-yellow-300 border border-dashed border-yellow-500/40 hover:border-yellow-400 whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Sliders className="w-3.5 h-3.5" />
             <span>Custom PR</span>
@@ -220,10 +220,10 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
         </div>
 
         {/* PR Quick Details */}
-        <div className="flex items-center gap-3 text-xs text-slate-400 font-mono shrink-0">
-          <span>Author: <strong className="text-slate-200 font-normal">{selectedPr.author}</strong></span>
+        <div className="flex items-center gap-3 text-xs text-neutral-400 font-mono shrink-0">
+          <span>Author: <strong className="text-yellow-400 font-normal">{selectedPr.author}</strong></span>
           <span aria-hidden="true">·</span>
-          <span>Repo: <strong className="text-slate-200 font-normal">{selectedPr.repo}</strong></span>
+          <span>Repo: <strong className="text-yellow-400 font-normal">{selectedPr.repo}</strong></span>
         </div>
       </div>
     </div>

@@ -16,7 +16,7 @@ export const ContractJsonViewer: React.FC<ContractJsonViewerProps> = ({ gateResu
 
   if (!gateResult) {
     return (
-      <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-8 text-center text-slate-500 font-mono text-xs">
+      <div className="rounded-xl border border-yellow-500/20 bg-neutral-950 p-8 text-center text-neutral-500 font-mono text-xs">
         No evaluation result generated yet. Run gate check to inspect JSON contract.
       </div>
     );
@@ -31,21 +31,21 @@ export const ContractJsonViewer: React.FC<ContractJsonViewerProps> = ({ gateResu
   };
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950 overflow-hidden font-mono text-xs">
-      <div className="bg-slate-900/80 px-4 py-2.5 border-b border-slate-800 flex items-center justify-between">
+    <div className="rounded-xl border border-yellow-500/20 bg-black overflow-hidden font-mono text-xs">
+      <div className="bg-neutral-950 px-4 py-2.5 border-b border-neutral-800 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <FileJson className="w-4 h-4 text-emerald-400" />
-          <span className="font-bold text-slate-200">Owner Interface Contract (Fixed Format)</span>
-          <span className="text-[10px] text-slate-500">· {new Blob([jsonString]).size} bytes</span>
+          <FileJson className="w-4 h-4 text-yellow-400" />
+          <span className="font-bold text-yellow-400">Owner Interface Contract (Fixed Format)</span>
+          <span className="text-[10px] text-neutral-500">· {new Blob([jsonString]).size} bytes</span>
         </div>
 
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 px-2.5 py-1 text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded transition-colors text-[11px]"
+          className="flex items-center gap-1.5 px-2.5 py-1 text-black font-bold bg-yellow-400 hover:bg-yellow-300 rounded transition-colors text-[11px]"
         >
           {copied ? (
             <>
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <Check className="w-3.5 h-3.5 text-black" />
               <span>Copied!</span>
             </>
           ) : (
@@ -57,8 +57,8 @@ export const ContractJsonViewer: React.FC<ContractJsonViewerProps> = ({ gateResu
         </button>
       </div>
 
-      <div className="p-4 overflow-x-auto text-slate-300 leading-relaxed max-h-[460px]">
-        <pre className="text-slate-200">
+      <div className="p-4 overflow-x-auto text-neutral-300 leading-relaxed max-h-[460px]">
+        <pre className="text-yellow-100/90">
           <code>{jsonString}</code>
         </pre>
       </div>

@@ -146,8 +146,7 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
           if (line.startsWith('+')) {
             const content = line.substring(1).trim();
             if (
-              /(jest\.spyOn\([^)]+\)\.mockReturnValue|vi\.spyOn\([^)]+\)\.mockImplementation|patch\.object\([^)]+\.return_value)/.test(content) ||
-              /(sinon\.stub\([^)]+\)\.returns|mockReturnValueOnce\(true\)|monkeypatch\.setattr\(|Mock\(return_value=|MagicMock\()/.test(content)
+              /(jest\.spyOn\([^)]+\)\.mockReturnValue|vi\.spyOn\([^)]+\)\.mockImplementation|patch\.object\([^)]+\.return_value|sinon\.stub\([^)]+\)\.returns|mockReturnValueOnce\(true\))/.test(content)
             ) {
               violations.push({
                 ruleId: 'AG-04',
@@ -155,7 +154,17 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
                 severity: 'critical',
                 file: file.filename,
                 line: lineNum,
-                description: `Mocked target unit under test in PR diff: "${content.slice(0, 70)}"`,
+                description: `Mocked target unit under test: "${content.slice(0, 70)}"`,
+                snippet: line
+              });
+            } else if (/(monkeypatch\.setattr\(|Mock\(return_value=|MagicMock\()/.test(content)) {
+              violations.push({
+                ruleId: 'AG-04',
+                ruleName: 'MOCKED_CODE_UNDER_TEST',
+                severity: 'medium',
+                file: file.filename,
+                line: lineNum,
+                description: `Unit test mock/monkeypatch detected in PR diff (verify target under test is not stubbed): "${content.slice(0, 65)}"`,
                 snippet: line
               });
             }
@@ -216,10 +225,12 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
       const isTestFile = /\.(test|spec)\.(ts|js|jsx|tsx|py)$|tests?\//i.test(file.filename);
       if (!isTestFile) return violations;
 
+      // Only enforce strict issue keyword matching when an explicit Issue # specification is provided
+      if (!issueScope.startsWith('Issue #')) return violations;
+
       const scopeKeywords = issueScope.toLowerCase().split(/\s+/).filter(w => w.length > 3);
       const fileLower = file.filename.toLowerCase();
 
-      // If issue was about "pricing" or "billing", but test file is "auth_test.ts"
       const matchesScope = scopeKeywords.some(kw => fileLower.includes(kw));
       if (!matchesScope && scopeKeywords.length > 0) {
         violations.push({
@@ -337,7 +348,7 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
                 violations.push({
                   ruleId: 'AG-08',
                   ruleName: 'PERFORMANCE_REGRESSION',
-                  severity: 'critical',
+                  severity: 'high',
                   file: file.filename,
                   line: lineNum,
                   description: `Introduces nested O(N^2) loop iteration bottleneck over collection at line ${lineNum}`,
@@ -365,6 +376,9 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
     severity: 'high',
     check: (file: DiffFile) => {
       const violations: AntiGamingViolation[] = [];
+      const isTestFile = /\.(test|spec)\.(ts|js|jsx|tsx|py)$|tests?\//i.test(file.filename);
+      if (isTestFile) return violations;
+
       for (const hunk of file.hunks) {
         // Group added lines by function so we pinpoint the exact over-complex function in multi-function files
         let lineNum = hunk.newStart;

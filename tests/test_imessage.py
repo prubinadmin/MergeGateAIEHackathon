@@ -181,6 +181,85 @@ def test_converse_falls_back_when_muse_fails():
     assert imessage.converse(_block_report(), "WHY", action) == action.text
 
 
+def test_converse_forbids_claims_not_the_word_approve(monkeypatch):
+    import merge_gate.llm as llm
+    url = "https://github.com/o/r/pull/7"
+    action = imessage.handle_inbound(imessage.Inbound(OWNER, "OK"), _block_report(), url)[0]
+    ok_text = f"Nothing I can do here, approve it yourself on GitHub: {url}"
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: ok_text)
+    assert imessage.converse(_block_report(), "OK", action, url) == ok_text  # telling the owner to approve is fine
+    for claim in ("Clean. Go ahead and merge.", "This is safe to ship.", "I approved it, you're done.",
+                  "Good to go, nothing else needed.", "Ship it."):
+        monkeypatch.setattr(llm, "complete", lambda *a, _c=claim, **k: _c)
+        assert imessage.converse(_block_report(), "OK", action, url) == action.text, claim
+
+
+def test_page_opens_a_reply_thread_only_for_block_and_review(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    from merge_gate import serve
+
+    state = serve.State(use_llm=False)
+    state.notifier = imessage.ConsoleNotifier()
+    peter = Owner("Peter", "peter@example.com", 3, "2026-03-01")  # the autouse env maps this address to OWNER
+    key, gh = imessage.phone_key(OWNER), {"repo": "o/r", "number": 7}
+
+    state.page(VerdictReport(pr_id="a", verdict="BLOCK", owners=[peter], run_hash="h1"), "https://u/a", gh)
+    assert state.threads[key] == {"pr_id": "a", "pr_url": "https://u/a", "github": gh}
+    state.page(VerdictReport(pr_id="b", verdict="PASS", owners=[peter], run_hash="h2"))  # an FYI: no reply expected
+    assert state.threads[key]["pr_id"] == "a"  # a BLOCK texted back still means PR a, not the last FYI
+    state.page(VerdictReport(pr_id="a", verdict="BLOCK", owners=[peter], run_hash="h3"))  # re-page, no context given
+    assert state.threads[key] == {"pr_id": "a", "pr_url": "https://u/a", "github": gh}  # GitHub link kept
+    state.page(VerdictReport(pr_id="c", verdict="REVIEW", owners=[peter], run_hash="h4"), "https://u/c")
+    assert state.threads[key] == {"pr_id": "c", "pr_url": "https://u/c", "github": {}}
+    assert len(state.notifier.sent) == 4 and set(state._paged) == {("a", "h1"), ("b", "h2"), ("a", "h3"), ("c", "h4")}
+
+
+def test_failed_background_text_is_logged_and_recorded(tmp_path, monkeypatch, caplog):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    from merge_gate import serve, store
+
+    class Down:
+        def send(self, phone, text):
+            raise imessage.SendError("Sendblue HTTP 500")
+
+    state = serve.State(use_llm=False)
+    state.notifier = Down()
+    with caplog.at_level("ERROR", logger="merge_gate.serve"):
+        serve._text_later(state, OWNER, "Blocked p1.", _block_report())  # raises nothing: the thread must live
+    assert "p1" in caplog.text and "SendError" in caplog.text
+    [rec] = store.read(kind="reply_send_failed")
+    assert rec["data"] == {"pr_id": "p1", "owner": "Peter", "text": "Blocked p1.", "error": "SendError: Sendblue HTTP 500"}
+    assert OWNER not in json.dumps(rec)  # the phone number stays out of the run log
+
+
+def test_lazy_report_never_pages_and_message_send_texts_once(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    from merge_gate import serve
+
+    state = serve.State(use_llm=False)
+    state.notifier = imessage.ConsoleNotifier()
+    state.demo()
+    owner = state.verify({"pr_id": "demo-1"}, auto_page=False).owners[0]
+    monkeypatch.setenv("OWNER_PHONES", json.dumps({owner.email: OWNER}))
+    state.reports.clear()
+    assert state.report("demo-1").verdict == "BLOCK" and state.notifier.sent == []  # read-ish paths never text
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.make_handler(state))
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        state.reports.clear()
+        code, out = _post(port, "/api/message", {"pr_id": "demo-1", "send": True})
+        assert code == 200 and out["sent"] == "console-1" and len(state.notifier.sent) == 1  # once, not twice
+        assert _post(port, "/api/reply", {"pr_id": "demo-1", "text": "WHY"})[0] == 200
+        assert len(state.notifier.sent) == 1
+    finally:
+        httpd.shutdown()
+
+
 def test_auto_page_on_verdict_and_no_duplicate(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("MONGODB_URI", raising=False)
@@ -206,6 +285,7 @@ def test_auto_page_on_verdict_and_no_duplicate(tmp_path, monkeypatch):
 
 def test_auto_page_can_be_switched_off(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
     monkeypatch.setenv("MERGE_GATE_AUTO_PAGE", "0")
     from merge_gate import serve
 
