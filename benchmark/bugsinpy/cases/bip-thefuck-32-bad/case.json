@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-32-bad",
+  "repo": "target_repos/thefuck",
+  "base_ref": "25cc98a21a3450a046caf418f08713c82a290805",
+  "head_ref": "8781ebd4fba22169e656e0f6d4f2d56702cd9b12",
+  "title": "Simplify thefuck/rules/ls_lah.py",
+  "issue_text": "Clean up thefuck/rules/ls_lah.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "scorphus@gmail.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 32,
+    "github_url": "",
+    "buggy_commit": "cb33c912e5f2f4c2da6b70d708ff0437bfcd3b94",
+    "fixed_commit": "25cc98a21a3450a046caf418f08713c82a290805",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_ls_lah.py::test_match"
+  }
+}

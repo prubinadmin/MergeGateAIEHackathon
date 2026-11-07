@@ -119,7 +119,7 @@ def test_api_verify_message_reply(tmp_path, monkeypatch, fake_github, log_path):
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
 
     def post(path, body):
-        req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "Origin": "http://localhost:3000"})
         return json.loads(urllib.request.urlopen(req, timeout=120).read())
 
     try:

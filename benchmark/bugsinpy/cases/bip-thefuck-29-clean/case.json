@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-29-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "4a2f869c6d6ef03d8d7ada1121cc6631d7ef979e",
+  "head_ref": "37ebc562b19465c4b87bca9b4494b643fa71c306",
+  "title": "Fix incorrect behaviour in thefuck/types.py",
+  "issue_text": "There is a bug in thefuck/types.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "nvbn.rm@gmail.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 29,
+    "github_url": "",
+    "buggy_commit": "4a2f869c6d6ef03d8d7ada1121cc6631d7ef979e",
+    "fixed_commit": "88831c424f569e6a55fc98883d3eeecc7d425b18",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/test_types.py::test_update_settings && pytest -q -p no:cacheprovider tests/test_utils.py::test_wrap_settings"
+  }
+}

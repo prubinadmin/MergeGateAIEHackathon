@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-27-bad",
+  "repo": "target_repos/thefuck",
+  "base_ref": "1becd92b126a368d6e7d93aa8eea209414ce4aa2",
+  "head_ref": "bb6a323f2ebc027442f48b13fbff7916c7ccf27d",
+  "title": "Simplify thefuck/rules/open.py",
+  "issue_text": "Clean up thefuck/rules/open.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "cartonmartin+git@gmail.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 27,
+    "github_url": "",
+    "buggy_commit": "bc6b107066d3f1e60b4cfcaa8cf6399e98cf1b1c",
+    "fixed_commit": "1becd92b126a368d6e7d93aa8eea209414ce4aa2",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_open.py::test_get_new_command"
+  }
+}

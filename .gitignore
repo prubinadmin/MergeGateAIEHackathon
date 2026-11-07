@@ -28,3 +28,8 @@ runs/
 
 # npm lockfile (the team uses bun.lock)
 package-lock.json
+
+# BugsInPy benchmark: downloaded metadata, upstream clones, Python 3.8 venv (rebuild: benchmark/bugsinpy/README.md)
+benchmark/bugsinpy/_bugsinpy/
+benchmark/bugsinpy/target_repos/
+benchmark/bugsinpy/.venv38/

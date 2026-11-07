@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-cookiecutter-4-clean",
+  "repo": "target_repos/cookiecutter",
+  "base_ref": "9568ab6ecd2d6836646006c59473c4a4ac0dee04",
+  "head_ref": "45492a15c39569a5795d7849c7783cdcf98a5bc1",
+  "title": "Fix incorrect behaviour in cookiecutter/exceptions.py, cookiecutter/generate.py, cookiecutter/hooks.py",
+  "issue_text": "There is a bug in cookiecutter/exceptions.py, cookiecutter/generate.py, cookiecutter/hooks.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "eliasdorneles@gmail.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "cookiecutter",
+    "bug": 4,
+    "github_url": "",
+    "buggy_commit": "9568ab6ecd2d6836646006c59473c4a4ac0dee04",
+    "fixed_commit": "457a1a4e862aab4102b644ff1d2b2e2b5a766b3c",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/test_hooks.py::TestExternalHooks::test_run_failing_hook"
+  }
+}

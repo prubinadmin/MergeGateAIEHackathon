@@ -37,7 +37,15 @@ def _token() -> str:
     load_dotenv()
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     if not tok:
-        raise GitHubError("GITHUB_TOKEN is not set")
+        # Local demo: reuse the presenter's `gh auth login` instead of a token file.
+        import subprocess
+
+        try:
+            tok = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            tok = ""
+    if not tok:
+        raise GitHubError("GITHUB_TOKEN is not set and `gh auth token` gave nothing")
     return tok
 
 
