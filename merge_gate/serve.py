@@ -84,13 +84,33 @@ class State:
         return r
 
 
+# Browser origins allowed to call this API: the local dev UI and the deployed Vercel UI.
+# Add more with MERGE_GATE_ORIGINS="https://a.example,https://b.example".
+ALLOWED_ORIGINS = {
+    "http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173",
+    "https://dist-phi-five-99.vercel.app",
+} | {o.strip() for o in os.environ.get("MERGE_GATE_ORIGINS", "").split(",") if o.strip()}
+
+
 def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
+        def _origin_ok(self) -> bool:
+            """Browsers always send Origin on cross-site fetch/POST; only our UI origins may drive this API.
+            No Origin header = not a browser page (curl, the Sendblue webhook via ngrok), so it is allowed."""
+            origin = self.headers.get("Origin")
+            return origin is None or origin in ALLOWED_ORIGINS
+
+        def _cors(self) -> None:
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+
         def _send(self, code: int, payload: object) -> None:
             data = json.dumps(payload, ensure_ascii=False, default=lambda o: o.__dict__).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._cors()
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -104,8 +124,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             pass
 
         def do_OPTIONS(self) -> None:
-            self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_response(204 if self._origin_ok() else 403)
+            self._cors()
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.end_headers()
@@ -114,7 +134,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._cors()
             self.end_headers()
             t0 = time.monotonic()
 
@@ -134,6 +154,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 send({"type": "error", "error": str(e)})
 
         def do_GET(self) -> None:
+            if not self._origin_ok():
+                return self._send(403, {"error": "origin not allowed"})
             try:
                 url = urllib.parse.urlparse(self.path)
                 q = dict(urllib.parse.parse_qsl(url.query))
@@ -173,6 +195,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 return self._send(500, {"error": str(e)})
 
         def do_POST(self) -> None:
+            if not self._origin_ok():
+                return self._send(403, {"error": "origin not allowed"})
             try:
                 body = self._body()
                 if self.path == "/api/verify":
