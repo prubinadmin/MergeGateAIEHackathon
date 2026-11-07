@@ -49,7 +49,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MUSE_API_KEY: ${{ secrets.MUSE_API_KEY }}
           OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
-        run: python -m merge_gate ci --out gate_result.json
+        # -I: never import from the PR's checkout (cwd), or a PR could ship its own merge_gate/ that always passes
+        run: python -I -m merge_gate ci --out gate_result.json
 
       - name: Keep the verdict report
         if: always()
