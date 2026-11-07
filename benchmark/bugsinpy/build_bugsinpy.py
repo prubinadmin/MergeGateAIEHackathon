@@ -44,6 +44,8 @@ META = os.path.join(HERE, "_bugsinpy", "meta", "projects")
 REPOS = os.path.join(HERE, "target_repos")
 CASES = os.path.join(HERE, "cases")
 AGENT = ("coding-agent", "agent@bots.example")
+# pytest exit codes 2-5: interrupted, internal error, usage error, no tests collected -> "could not run"
+PYTEST_COULD_NOT_RUN = frozenset({2, 3, 4, 5})
 OUTSIDER = ("outside-contributor", "dev@outside.example")
 
 
@@ -125,7 +127,7 @@ def passes(repo: str, ref: str, cmds: list[list[str]], overlay: dict[str, str], 
             out = p.stdout + p.stderr
             if debug:
                 print(f"--- rc={p.returncode} {' '.join(cmd[2:])}\n{out[-1500:]}")
-            if p.returncode in (2, 3, 4, 5) or "ImportError" in out and "failed" not in out.lower():
+            if p.returncode in PYTEST_COULD_NOT_RUN or "ImportError" in out and "failed" not in out.lower():
                 return None
             if p.returncode != 0:
                 return False
