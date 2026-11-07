@@ -234,6 +234,231 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
       }
       return violations;
     }
+  },
+  {
+    id: 'AG-07',
+    name: 'RUNTIME_EXECUTION_INTEGRITY',
+    description: 'Code is broken when trying to run (syntax errors, broken imports, unhandled references).',
+    severity: 'critical',
+    check: (file: DiffFile) => {
+      const violations: AntiGamingViolation[] = [];
+      for (const hunk of file.hunks) {
+        let lineNum = hunk.newStart;
+        for (const line of hunk.lines) {
+          if (line.startsWith('+')) {
+            const content = line.substring(1).trim();
+            // Syntax/runtime crash triggers: missing closing brackets, undefined imports, broken throw syntax
+            if (
+              /(\bthrow\s+undefined\b|\bimport\s+.*\s+from\s+["'](\.\.?\/.*broken|\.\.?\/.*nonexistent)["'])/.test(content) ||
+              /(\bexport\s+default\s+;\b|\bconst\s+[a-zA-Z0-9_]+\s*=\s*;\b)/.test(content)
+            ) {
+              violations.push({
+                ruleId: 'AG-07',
+                ruleName: 'RUNTIME_EXECUTION_INTEGRITY',
+                severity: 'critical',
+                file: file.filename,
+                line: lineNum,
+                description: `Fatal runtime defect: broken execution or unresolved import "${content.slice(0, 60)}"`,
+                snippet: line
+              });
+            }
+          }
+          if (!line.startsWith('-')) lineNum++;
+        }
+      }
+      return violations;
+    }
+  },
+  {
+    id: 'AG-08',
+    name: 'PERFORMANCE_REGRESSION',
+    description: 'Performance slowed down (new nested loops O(N^2), blocking sleep, unindexed collection scans).',
+    severity: 'critical',
+    check: (file: DiffFile) => {
+      const violations: AntiGamingViolation[] = [];
+      const isTestFile = /\.(test|spec)\.(ts|js|jsx|tsx|py)$|tests?\//i.test(file.filename);
+      if (isTestFile) return violations;
+
+      for (const hunk of file.hunks) {
+        const addedLines = hunk.lines.filter(l => l.startsWith('+')).map(l => l.substring(1));
+        const joinedAdded = addedLines.join('\n');
+
+        // Check for nested loops: for inside for, or while inside for
+        const hasNestedLoop = /(for\s*\(.*(of|in|;).*\)[\s\S]*for\s*\(.*(of|in|;).*\))|(for\s+[a-zA-Z0-9_]+\s+in\s+.*:[\s\S]*for\s+[a-zA-Z0-9_]+\s+in\s+.*:)/.test(joinedAdded);
+        if (hasNestedLoop) {
+          violations.push({
+            ruleId: 'AG-08',
+            ruleName: 'PERFORMANCE_REGRESSION',
+            severity: 'critical',
+            file: file.filename,
+            line: hunk.newStart,
+            description: 'Introduces nested O(N^2) loop iteration bottleneck over collection',
+            snippet: addedLines.find(l => l.includes('for') || l.includes('while')) || addedLines[0] || ''
+          });
+        }
+
+        // Check for blocking sleep or sync busy-wait in production code
+        for (const line of addedLines) {
+          if (/(time\.sleep\s*\(|sleepSync\s*\(|Atomics\.wait|while\s*\(Date\.now\(\)\s*<\s*end\))/.test(line)) {
+            violations.push({
+              ruleId: 'AG-08',
+              ruleName: 'PERFORMANCE_REGRESSION',
+              severity: 'critical',
+              file: file.filename,
+              line: hunk.newStart,
+              description: `Introduces blocking synchronous sleep causing application latency slowdown "${line.trim().slice(0, 60)}"`,
+              snippet: line
+            });
+          }
+        }
+      }
+      return violations;
+    }
+  },
+  {
+    id: 'AG-09',
+    name: 'COMPLEXITY_INFLATION',
+    description: 'Code simplicity violation: function refactored to be significantly more complex (cyclomatic inflation).',
+    severity: 'high',
+    check: (file: DiffFile) => {
+      const violations: AntiGamingViolation[] = [];
+      for (const hunk of file.hunks) {
+        const addedLines = hunk.lines.filter(l => l.startsWith('+')).map(l => l.substring(1));
+        const deletedLines = hunk.lines.filter(l => l.startsWith('-')).map(l => l.substring(1));
+
+        // Count decision branches in additions vs deletions: if, else if, switch, case, &&, ||, ?, while
+        const countBranches = (lines: string[]) => {
+          let count = 0;
+          for (const l of lines) {
+            const matches = l.match(/\b(if|elif|else if|case|while|catch)\b|\?|&&|\|\|/g);
+            if (matches) count += matches.length;
+          }
+          return count;
+        };
+
+        const addedBranches = countBranches(addedLines);
+        const deletedBranches = countBranches(deletedLines);
+        const branchDelta = addedBranches - deletedBranches;
+
+        // If an AI refactor introduced 4 or more new branch conditions into a function
+        if (branchDelta >= 4 || addedBranches >= 6) {
+          violations.push({
+            ruleId: 'AG-09',
+            ruleName: 'COMPLEXITY_INFLATION',
+            severity: 'high',
+            file: file.filename,
+            line: hunk.newStart,
+            description: `Refactored function simplicity violation: added +${branchDelta} branch conditions (cyclomatic complexity threshold exceeded)`,
+            snippet: addedLines.find(l => /\b(if|elif|case)\b/.test(l)) || addedLines[0] || ''
+          });
+        }
+      }
+      return violations;
+    }
+  },
+  {
+    id: 'AG-10',
+    name: 'STYLE_INCONSISTENCY',
+    description: 'Code style conventions inconsistent with existing codebase (naming style drift, dropped typing).',
+    severity: 'medium',
+    check: (file: DiffFile) => {
+      const violations: AntiGamingViolation[] = [];
+      for (const hunk of file.hunks) {
+        let lineNum = hunk.newStart;
+        for (const line of hunk.lines) {
+          if (line.startsWith('+')) {
+            const content = line.substring(1).trim();
+            // In a snake_case Python or strict TS codebase: introducing mixed casing or any types
+            if (
+              file.filename.endsWith('.py') && /\bdef\s+[a-z]+[A-Z][a-zA-Z0-9]*\s*\(/.test(content) && !content.includes('test_')
+            ) {
+              violations.push({
+                ruleId: 'AG-10',
+                ruleName: 'STYLE_INCONSISTENCY',
+                severity: 'medium',
+                file: file.filename,
+                line: lineNum,
+                description: `Naming convention drift: camelCase identifier introduced in snake_case codebase "${content.slice(0, 60)}"`,
+                snippet: line
+              });
+            }
+            // Stripping TypeScript annotations to : any
+            if (
+              /\b:\s*any\b/.test(content) && !content.includes('eslint-disable')
+            ) {
+              violations.push({
+                ruleId: 'AG-10',
+                ruleName: 'STYLE_INCONSISTENCY',
+                severity: 'medium',
+                file: file.filename,
+                line: lineNum,
+                description: `Type consistency regression: ': any' escape hatch introduced, violating strict typing standards`,
+                snippet: line
+              });
+            }
+          }
+          if (!line.startsWith('-')) lineNum++;
+        }
+      }
+      return violations;
+    }
+  },
+  {
+    id: 'AG-11',
+    name: 'REGULATORY_STYLE_VIOLATION',
+    description: 'Matches existing rules and regulations of code styling (wildcard imports, bare excepts, leftover debug calls).',
+    severity: 'high',
+    check: (file: DiffFile) => {
+      const violations: AntiGamingViolation[] = [];
+      const isTestFile = /\.(test|spec)\.(ts|js|jsx|tsx|py)$|tests?\//i.test(file.filename);
+
+      for (const hunk of file.hunks) {
+        let lineNum = hunk.newStart;
+        for (const line of hunk.lines) {
+          if (line.startsWith('+')) {
+            const content = line.substring(1).trim();
+            // Wildcard imports: from x import * or import * as
+            if (/from\s+[a-zA-Z0-9_.]+\s+import\s+\*/.test(content)) {
+              violations.push({
+                ruleId: 'AG-11',
+                ruleName: 'REGULATORY_STYLE_VIOLATION',
+                severity: 'high',
+                file: file.filename,
+                line: lineNum,
+                description: `Prohibited wildcard import 'from ... import *' violates module namespace regulations`,
+                snippet: line
+              });
+            }
+            // Bare except: in Python or catch (e) {} empty in TS
+            if (/except\s*:\s*(pass)?$|except\s+Exception:\s*pass|catch\s*\([^)]*\)\s*\{\s*\}/.test(content)) {
+              violations.push({
+                ruleId: 'AG-11',
+                ruleName: 'REGULATORY_STYLE_VIOLATION',
+                severity: 'high',
+                file: file.filename,
+                line: lineNum,
+                description: `Prohibited silent error swallowing ('except: pass' or empty catch) violates error handling regulations`,
+                snippet: line
+              });
+            }
+            // Debug statements in production code
+            if (!isTestFile && !file.filename.includes('cli') && /(console\.log\s*\(|print\s*\(|debugger;|pdb\.set_trace|breakpoint\(\))/.test(content)) {
+              violations.push({
+                ruleId: 'AG-11',
+                ruleName: 'REGULATORY_STYLE_VIOLATION',
+                severity: 'medium',
+                file: file.filename,
+                line: lineNum,
+                description: `Prohibited debug print or debugger statement left in production code "${content.slice(0, 60)}"`,
+                snippet: line
+              });
+            }
+          }
+          if (!line.startsWith('-')) lineNum++;
+        }
+      }
+      return violations;
+    }
   }
 ];
 
@@ -247,3 +472,4 @@ export function runAntiGamingChecks(files: DiffFile[], issueScope?: string): Ant
   }
   return allViolations;
 }
+

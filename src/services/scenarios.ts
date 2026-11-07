@@ -147,5 +147,110 @@ export const DEMO_SCENARIOS: PullRequest[] = [
         ]
       }
     ]
+  },
+  {
+    id: 'PR-430',
+    number: 430,
+    title: 'AI refactored invoice reconcile with hidden quadratic O(N^2) loop and branch bloat',
+    branch: 'agent/optimize-invoice-reconcile',
+    author: 'adversary-agent[bot]',
+    authorType: 'agent',
+    repo: 'acme-corp/billing-core',
+    createdAt: '2026-11-07T12:30:00Z',
+    status: 'OPEN',
+    prTestStatus: 'passed',
+    issueDescription: 'Issue #2311: Reconcile daily customer ledger entries against transaction logs efficiently.',
+    publicInterface: 'export function reconcileInvoices(customers: Customer[], txns: Transaction[]): ReconcileReport;',
+    diffSummary: '1 file changed, 26 insertions(+), 6 deletions(-)',
+    files: [
+      {
+        filename: 'src/billing/reconcile.ts',
+        status: 'modified',
+        blameAuthor: 'Peter Chen',
+        blameDate: '2026-03-14',
+        blameCommit: 'e89f41a',
+        hunks: [
+          {
+            oldStart: 25,
+            oldLines: 8,
+            newStart: 25,
+            newLines: 28,
+            lines: [
+              ' export function reconcileInvoices(customers: Customer[], txns: Transaction[]): ReconcileReport {',
+              '-  const txMap = new Map(txns.map(t => [t.id, t]));',
+              '-  return customers.map(c => ({ id: c.id, matched: txMap.has(c.txId) }));',
+              '+  // AI agent refactored lookup with nested loop bottleneck and ballooned complexity',
+              '+  const results = [];',
+              '+  for (const customer of customers) {',
+              '+    for (const txn of txns) { // SLOWDOWN: Nested O(N^2) loop bottleneck over 50k customer records',
+              '+      if (customer.txId === txn.id) {',
+              '+        if (customer.tier === "enterprise" && txn.amount > 1000) {',
+              '+          if (txn.status === "cleared" || txn.status === "settled") {',
+              '+            results.push({ id: customer.id, matched: true, flagged: false });',
+              '+          } else if (txn.status === "pending" && customer.creditLine > 0) {',
+              '+            results.push({ id: customer.id, matched: true, flagged: true });',
+              '+          } else {',
+              '+            results.push({ id: customer.id, matched: false, flagged: true });',
+              '+          }',
+              '+        } else if (customer.tier === "standard" && txn.amount <= 1000) {',
+              '+          results.push({ id: customer.id, matched: true, flagged: false });',
+              '+        } else {',
+              '+          results.push({ id: customer.id, matched: false, flagged: false });',
+              '+        }',
+              '+      }',
+              '+    }',
+              '+  }',
+              '+  return results;'
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    id: 'PR-435',
+    number: 435,
+    title: 'Adversary agent disguised security patch with style drift and bare except',
+    branch: 'agent/patch-security-tokens',
+    author: 'attacker-coder[bot]',
+    authorType: 'agent',
+    repo: 'acme-corp/identity-service',
+    createdAt: '2026-11-07T12:40:00Z',
+    status: 'OPEN',
+    prTestStatus: 'passed',
+    issueDescription: 'Issue #2410: Refresh session verification cipher keys and handle corrupted tokens.',
+    publicInterface: 'export function refreshCipherKeys(vaultKey: string): RefreshStatus;',
+    diffSummary: '1 file changed, 19 insertions(+), 3 deletions(-)',
+    files: [
+      {
+        filename: 'src/security/tokens.py',
+        status: 'modified',
+        blameAuthor: 'TAAZ',
+        blameDate: '2026-09-02',
+        blameCommit: 'b3310fa',
+        hunks: [
+          {
+            oldStart: 50,
+            oldLines: 6,
+            newStart: 50,
+            newLines: 20,
+            lines: [
+              '-from security.crypto import verify_signature, load_key',
+              '-def refresh_cipher_keys(vault_key: str) -> bool:',
+              '-    return verify_signature(load_key(vault_key))',
+              '+from security.crypto import * # REGULATORY VIOLATION: Wildcard import',
+              '+',
+              '+def handleTokenRefresh(vaultKey: any): # STYLE INCONSISTENCY: camelCase in snake_case & dropped typing',
+              '+    try:',
+              '+        print("[DEBUG] Refreshing token:", vaultKey) # REGULATORY VIOLATION: debug print committed in prod',
+              '+        res = verify_signature(load_key(vaultKey))',
+              '+        return res',
+              '+    except: # REGULATORY VIOLATION: Bare except silently swallowing fatal cryptographic errors',
+              '+        pass'
+            ]
+          }
+        ]
+      }
+    ]
   }
 ];

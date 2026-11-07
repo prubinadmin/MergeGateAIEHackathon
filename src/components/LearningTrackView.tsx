@@ -17,6 +17,11 @@ import {
 } from 'lucide-react';
 import { GateRuleVersion } from '../types/mergeGate';
 import { BenchmarkEvaluationResult, evaluateFeedbackAndEvolveGate } from '../services/learningEngine';
+import {
+  HardeningEvent,
+  INITIAL_HARDENING_EVENTS,
+  executeSelfHardeningCycle
+} from '../services/hardeningEngine';
 
 interface LearningTrackViewProps {
   versions: GateRuleVersion[];
@@ -28,10 +33,17 @@ export const LearningTrackView: React.FC<LearningTrackViewProps> = ({
   onUpdateVersions
 }) => {
   const [selectedOwner, setSelectedOwner] = useState('Peter Chen');
-  const [selectedRule, setSelectedRule] = useState('AG-03: WEAKENED_ASSERT');
-  const [targetPr, setTargetPr] = useState('PR-412');
+  const [selectedRule, setSelectedRule] = useState('AG-08: PERFORMANCE_REGRESSION');
+  const [targetPr, setTargetPr] = useState('PR-430');
   const [isSimulating, setIsSimulating] = useState(false);
   const [lastEvalResult, setLastEvalResult] = useState<BenchmarkEvaluationResult | null>(null);
+
+  // Adaptive Hardening State
+  const [hardeningEvents, setHardeningEvents] = useState<HardeningEvent[]>(INITIAL_HARDENING_EVENTS);
+  const [attackerVector, setAttackerVector] = useState('Obfuscated nested O(N^2) loop in collection reduce()');
+  const [attackerTechnique, setAttackerTechnique] = useState('Complexity & Performance Masking');
+  const [isHardening, setIsHardening] = useState(false);
+  const [latestHardeningSuccess, setLatestHardeningSuccess] = useState<HardeningEvent | null>(null);
 
   const handleSimulateFeedback = () => {
     setIsSimulating(true);
@@ -47,6 +59,21 @@ export const LearningTrackView: React.FC<LearningTrackViewProps> = ({
       setLastEvalResult(result);
       setIsSimulating(false);
     }, 800);
+  };
+
+  const handleSimulateAttackerHardening = () => {
+    setIsHardening(true);
+    setTimeout(() => {
+      const { event, updatedVersions } = executeSelfHardeningCycle(
+        attackerVector,
+        attackerTechnique,
+        versions
+      );
+      setHardeningEvents(prev => [event, ...prev]);
+      onUpdateVersions(updatedVersions);
+      setLatestHardeningSuccess(event);
+      setIsHardening(false);
+    }, 1000);
   };
 
   const activeVersion = versions.find(v => v.status === 'active') || versions[versions.length - 1];
@@ -192,6 +219,113 @@ export const LearningTrackView: React.FC<LearningTrackViewProps> = ({
             </div>
           </div>
         )}
+      </div>
+
+      {/* Autonomous Hardening Against Attacker Agents */}
+      <div className="rounded-xl border border-indigo-900/50 bg-indigo-950/20 p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-indigo-400" />
+            <h4 className="text-sm font-bold text-white tracking-tight">
+              Self-Hardening Loop: Neutralize Attacker Agent Evasions
+            </h4>
+          </div>
+          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-900/40 text-indigo-300 border border-indigo-700/50">
+            Autonomous Mutation Engine
+          </span>
+        </div>
+
+        <p className="text-xs text-slate-300 leading-relaxed">
+          When an adversarial coding agent crafts a novel evasion technique (e.g. disguise complexity in lambdas,
+          hide quadratic $O(N^2)$ slowdowns, or swallow errors), the verifier synthesizes an AST-level counter-rule,
+          runs benchmark verification on the held-out corpus, and immediately hardens the gate to version <strong className="text-indigo-300 font-mono">vN+1</strong>.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div>
+            <label className="block text-slate-400 mb-1 font-mono">Evasion Vector:</label>
+            <input
+              type="text"
+              value={attackerVector}
+              onChange={(e) => setAttackerVector(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-md p-2 text-slate-200 focus:outline-hidden focus:border-indigo-500 font-mono text-xs"
+            />
+          </div>
+
+          <div>
+            <label className="block text-slate-400 mb-1 font-mono">Benchmark Category:</label>
+            <select
+              value={attackerTechnique}
+              onChange={(e) => setAttackerTechnique(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-md p-2 text-slate-200 focus:outline-hidden focus:border-indigo-500 font-mono text-xs"
+            >
+              <option value="Application Performance (O(N^2) Bottlenecks)">Application Performance (O(N^2) Bottlenecks)</option>
+              <option value="Code Simplicity (Cyclomatic Sprawl)">Code Simplicity (Cyclomatic Sprawl)</option>
+              <option value="Runtime Integrity (Broken Imports)">Runtime Integrity (Broken Imports)</option>
+              <option value="Style Consistency (Naming Drift)">Style Consistency (Naming Drift)</option>
+              <option value="Repo Regulations (Bare Excepts & Swallowing)">Repo Regulations (Bare Excepts & Swallowing)</option>
+            </select>
+          </div>
+
+          <div className="flex items-end">
+            <button
+              onClick={handleSimulateAttackerHardening}
+              disabled={isHardening}
+              className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold rounded-md shadow-sm transition-all"
+            >
+              {isHardening ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Synthesizing Counter-Rule...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Launch Attack & Harden Gate</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Hardening Success Alert */}
+        {latestHardeningSuccess && (
+          <div className="p-4 rounded-lg border border-indigo-700/60 bg-indigo-950/40 text-xs font-mono">
+            <div className="flex items-center gap-2 text-indigo-300 font-bold mb-1">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Gate Self-Hardened: {latestHardeningSuccess.newGateVersion} Deployed</span>
+            </div>
+            <div className="text-slate-300 text-[11px] space-y-1">
+              <div>Neutralized: {latestHardeningSuccess.attackVector}</div>
+              <div>Generated Invariant Rule: <strong className="text-indigo-200">{latestHardeningSuccess.synthesizedRuleId}</strong> ({latestHardeningSuccess.synthesizedRuleName})</div>
+              <div className="text-emerald-400 font-semibold">
+                Benchmark Verification: Catch Rate improved {latestHardeningSuccess.preCatchRate.toFixed(1)}% → {latestHardeningSuccess.postCatchRate.toFixed(1)}% with zero false block degradation!
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Recent Hardening Ledger */}
+        <div className="space-y-2 pt-1">
+          <div className="text-[11px] font-mono text-slate-400 font-semibold">
+            Recent Hardening Events:
+          </div>
+          <div className="space-y-1.5">
+            {hardeningEvents.slice(0, 3).map((event, idx) => (
+              <div key={idx} className="bg-slate-950/60 p-2.5 rounded border border-slate-800 text-[11px] font-mono flex items-center justify-between">
+                <div>
+                  <span className="text-indigo-400 font-bold">{event.synthesizedRuleId}</span>
+                  <span className="text-slate-500 mx-1.5">·</span>
+                  <span className="text-slate-300">{event.attackerTechnique}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-emerald-400 font-semibold">{event.postCatchRate}% catch</span>
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 text-[10px]">{event.newGateVersion}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Gate Versions Table */}
