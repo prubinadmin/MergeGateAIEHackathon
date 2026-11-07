@@ -1,0 +1,6 @@
+{
+  "name": "Merge Gate Reviewer",
+  "description": "Deterministic safety gate and line-owner routing for AI and external code changes, with independent tests, anti-gaming rules, and instant iMessage triage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

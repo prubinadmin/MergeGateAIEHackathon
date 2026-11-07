@@ -1,0 +1,37 @@
+name: "Merge Gate Safety Reviewer"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  merge-gate:
+    name: "Merge Gate Review"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history needed for git blame -L and recency weighting
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate Diff & Run Merge Gate
+        id: gate
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+          python scripts/merge_gate.py \
+            --pr "PR-${{ github.event.pull_request.number }}" \
+            --diff pr.diff \
+            --issue "${{ github.event.pull_request.body }}" > gate_result.json
+          cat gate_result.json
+          
+          VERDICT=$(jq -r '.verdict' gate_result.json)
+          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
+          if [ "$VERDICT" = "BLOCK" ]; then
+            echo "Merge Gate returned BLOCK. Notifying owner via iMessage."
+            exit 1
+          fi
