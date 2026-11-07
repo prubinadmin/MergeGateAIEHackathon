@@ -175,6 +175,17 @@ def test_tampered_stored_test_is_skipped_and_logged(demo, monkeypatch):
     assert store.read(kind="owner_test_skipped")[0]["data"]["file"] == t.file
 
 
+def test_base_runs_once_per_base_commit(demo, monkeypatch):
+    model(monkeypatch, GOOD)
+    owner_tests.rule_to_test(demo["demo-1"], PETER, SENTENCE)
+    refs, real = [], owner_tests.run_tests
+    monkeypatch.setattr(owner_tests, "run_tests", lambda repo, ref, *a: refs.append(ref) or real(repo, ref, *a))
+    first, second = owner_tests.check_owner_tests(demo["demo-1"]), owner_tests.check_owner_tests(demo["demo-1"])
+    assert first and [e.id for e in first] == [e.id for e in second]  # same block evidence both times
+    pr = demo["demo-1"]
+    assert refs == [pr.git("rev-parse", pr.base_ref).strip(), pr.head_ref, pr.head_ref]  # base ran once, not twice
+
+
 def test_one_broken_stored_test_does_not_hide_the_others(demo, monkeypatch):
     model(monkeypatch, GOOD)
     good = owner_tests.rule_to_test(demo["demo-1"], PETER, SENTENCE)

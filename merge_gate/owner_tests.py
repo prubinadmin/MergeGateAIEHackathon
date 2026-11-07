@@ -210,6 +210,7 @@ def check_owner_tests(pr: PullRequest, timeout_s: int = 60, dir_: str | None = N
             detail=f'{e["owner"]} taught the gate "{e["sentence"]}"; {test} {msg}',
         )
 
+    base_sha = pr.git("rev-parse", pr.base_ref).strip()
     out: list[Evidence] = []
     for e in load_registry(root):
         if not changed & set(e.get("files") or []):
@@ -222,17 +223,28 @@ def check_owner_tests(pr: PullRequest, timeout_s: int = 60, dir_: str | None = N
         if not e.get("sha256") or _sha(src) != e["sha256"]:
             store.append("owner_test_skipped", {"file": e["file"], "reason": "file does not match the validated sha256"})
             continue
-        files = {os.path.basename(e["file"]): src}
-        base = run_tests(pr.repo_path, pr.base_ref, files, timeout_s)
-        if base.errored:
-            out.append(ev(e, e["test_name"], "is broken: it no longer runs on the base branch", severity="review"))
-            continue
-        if base.failed:
-            continue  # the rule stopped holding on base before this PR; not this PR's doing
-        head = run_tests(pr.repo_path, pr.head_ref, files, timeout_s)
-        if head.errored:
-            out.append(ev(e, e["test_name"], "cannot even run on the PR"))
-            continue
-        for f in head.failed:
-            out.append(ev(e, f.test_id.split("::")[-1], f"fails: {f.message}", file=f.file, line=f.line))
+        out += _check_rule(pr, e, src, base_sha, timeout_s, ev)
     return out
+
+
+# (repo, base commit, test sha256) -> whether it fails on base. The base outcome depends only on those, so every
+# PR against the same base reuses it instead of re-exporting and re-running base for each rule on each verify.
+# ponytail: in-process only (helps serve.py, not one-shot CI); grows by one entry per (base commit, rule).
+_base_fails: dict[tuple[str, str, str], bool] = {}
+
+
+def _check_rule(pr: PullRequest, e: dict, src: str, base_sha: str, timeout_s: int, ev) -> list[Evidence]:
+    """One stored rule in its own sandbox sessions: base (cached per base commit), then head only if base holds."""
+    files = {os.path.basename(e["file"]): src}
+    key = (os.path.abspath(pr.repo_path), base_sha, e["sha256"])
+    if key not in _base_fails:
+        base = run_tests(pr.repo_path, base_sha, files, timeout_s)
+        if base.errored:  # never cache: a timeout may be transient
+            return [ev(e, e["test_name"], "is broken: it no longer runs on the base branch", severity="review")]
+        _base_fails[key] = bool(base.failed)
+    if _base_fails[key]:
+        return []  # the rule stopped holding on base before this PR; not this PR's doing
+    head = run_tests(pr.repo_path, pr.head_ref, files, timeout_s)
+    if head.errored:
+        return [ev(e, e["test_name"], "cannot even run on the PR")]
+    return [ev(e, f.test_id.split("::")[-1], f"fails: {f.message}", file=f.file, line=f.line) for f in head.failed]
