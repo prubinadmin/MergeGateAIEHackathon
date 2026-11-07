@@ -14,6 +14,7 @@ import json
 import os
 import sys
 
+from .notify import authorized_owners, blame_order
 from .pr import PullRequest
 from .schema import VerdictReport
 
@@ -52,18 +53,20 @@ def owner_approved(event: dict, report: VerdictReport) -> str:
         mapping = json.loads(os.environ.get("OWNER_GITHUB") or "{}")
     except json.JSONDecodeError:
         mapping = {}
-    owner_logins = {mapping.get(o.email) for o in report.owners[:2]} - {None}
+    # top two by blame share, plus SubQ's routed owner only if eligible: a route never widens authority
+    owner_logins = {mapping.get(o.email) for o in blame_order(report.owners)[:2] + authorized_owners(report)} - {None}
     return login if login and login in owner_logins else ""
 
 
-def main(use_llm: bool, out_path: str = "gate_result.json", publish: bool = True, repo_path: str = ".") -> int:
+def main(use_llm: bool, out_path: str = "gate_result.json", publish: bool = True, use_subq: bool = False,
+         repo_path: str = ".") -> int:
     from . import github
     from .store import log_report
     from .verify import verify
 
     event = _event()
     pr, number = pr_from_event(event, repo_path)
-    report = verify(pr, use_llm=use_llm)
+    report = verify(pr, use_llm=use_llm, use_subq=use_subq)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(report.to_json())
     log_report(report, source="ci")

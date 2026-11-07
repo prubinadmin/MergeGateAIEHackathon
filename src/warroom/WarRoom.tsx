@@ -272,7 +272,18 @@ export default function WarRoom() {
     return m;
   }, [r, c.stages.rules]);
   const tg = c.stages.testgen;
-  const owners = (c.stages.owners?.owners || r?.owners || []) as Report['owners'];
+  // Once routing is done, the routed order (report, or the routing stage's pick) replaces the blame order.
+  const rt = c.stages.routing?.status === 'done' ? c.stages.routing : undefined;
+  const blameOrder = (c.stages.owners?.owners || []) as Report['owners'];
+  const owners: Report['owners'] = r?.owners
+    || (rt?.to ? [rt.to, ...blameOrder.filter((o) => o.email !== rt.to.email || o.name !== rt.to.name)] : blameOrder);
+  const route = r || rt;
+  const routeLine = route && (rt || r?.urgency)
+    ? [
+      route.routed_by === 'subq' ? `routed by SubQ · ${Math.round((route.route_confidence || 0) * 100)}% confidence` : 'routed by blame',
+      route.urgency ? `urgency ${route.urgency}` : '',
+    ].filter(Boolean).join(' · ')
+    : '';
 
   return (
     <div className="flex-1 bg-[#0a0a0b] text-zinc-100">
@@ -418,6 +429,7 @@ export default function WarRoom() {
                       {i === 0 && <span className="rounded bg-amber-500/15 px-1.5 text-[10.5px] text-amber-300">gets the text</span>}
                     </div>
                   ))}
+                  {routeLine && <div className="pt-1 font-mono text-[11.5px] text-amber-300/90">{routeLine}</div>}
                 </div>
               )}
             </Lane>

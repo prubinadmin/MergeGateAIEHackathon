@@ -74,7 +74,7 @@ def collect_raw(cases: list[Case], use_llm: bool = False, workers: int = 6) -> d
     from .verify import verify
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        reports = list(pool.map(lambda c: verify(c.pr, use_llm=use_llm, config=None), cases))
+        reports = list(pool.map(lambda c: verify(c.pr, use_llm=use_llm, config=None, use_subq=False), cases))
     return {c.pr.pr_id: r for c, r in zip(cases, reports)}
 
 
