@@ -15,8 +15,12 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
+from collections import Counter
 
 SEED = 20261107
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1397,19 +1401,18 @@ TRAIN_PER_KIND = {"security_hole": 2, "logic_bug": 2, "deleted_test": 2, "weaken
                   "hardcoded_output": 2, "backdoor": 1, "clean": 4}
 
 
+def _apply_edits(key: str, path: str, src: str, edits: list[tuple[str, str]]) -> str:
+    for old, new in edits:
+        if src.count(old) != 1:
+            raise ValueError(f"{key}: edit to {path} does not match the base file exactly once: {old[:60]!r}")
+        src = src.replace(old, new)
+    return src
+
+
 def head_files(spec: dict, base: dict[str, str]) -> dict[str, str | None]:
-    out: dict[str, str | None] = {}
-    for path, edits in spec["edits"].items():
-        if edits is None:
-            out[path] = None
-            continue
-        src = base[path]
-        for old, new in edits:
-            if src.count(old) != 1:
-                raise ValueError(f"{spec['key']}: edit to {path} does not match the base file exactly once: {old[:60]!r}")
-            src = src.replace(old, new)
-        out[path] = src
-    return out
+    """Files on the PR branch: None = deleted, else the base file with the spec's edits applied in order."""
+    return {path: None if edits is None else _apply_edits(spec["key"], path, base[path], edits)
+            for path, edits in spec["edits"].items()}
 
 
 def assign(prs: list[dict] = PRS, seed: int = SEED) -> list[dict]:
@@ -1452,7 +1455,9 @@ def all_cases() -> list[dict]:
 
 
 def _git(repo: str, *args: str, who: tuple[str, str] | None = None) -> str:
-    env = dict(os.environ)
+    # Scrubbed env: a build can never address the outer repo (GIT_DIR & co.) or run the user's global hooks/config.
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, HOME=tempfile.gettempdir())
     if who:
         env.update(GIT_AUTHOR_NAME=who[0], GIT_AUTHOR_EMAIL=who[1], GIT_COMMITTER_NAME=who[0], GIT_COMMITTER_EMAIL=who[1])
     return subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, text=True, env=env).stdout
@@ -1471,23 +1476,28 @@ def _commit(repo: str, files: dict[str, str | None], who: tuple[str, str], msg: 
     _git(repo, "commit", "-q", "-m", msg, who=who)
 
 
+def _hunk_base_range(hunk: str, n_lines: int) -> tuple[int, int]:
+    """Base-file lines a `@@ -a,b +c,d @@` hunk touches; a pure insertion counts the two lines around it."""
+    old = hunk.split()[1][1:].split(",")
+    start, count = int(old[0]), int(old[1]) if len(old) > 1 else 1
+    return (start, start + count - 1) if count else (max(1, start), min(n_lines, start + 1))
+
+
+def _blame_emails(repo: str, path: str, a: int, b: int) -> list[str]:
+    out = _git(repo, "blame", "--line-porcelain", "-L", f"{a},{b}", "main", "--", path)
+    return [row[len("author-mail "):].strip("<>") for row in out.splitlines() if row.startswith("author-mail ")]
+
+
+def _touched_line_authors(repo: str, head_ref: str, path: str) -> list[str]:
+    diff = _git(repo, "diff", "-U0", f"main...{head_ref}", "--", path)
+    n_lines = _git(repo, "show", f"main:{path}").count("\n")
+    ranges = [_hunk_base_range(line, n_lines) for line in diff.splitlines() if line.startswith("@@ ")]
+    return [email for a, b in ranges for email in _blame_emails(repo, path, a, b)]
+
+
 def blame_owner(repo: str, head_ref: str, paths: list[str]) -> str:
     """Email of the author of most base lines the PR modifies or deletes (insertions: the two lines around them)."""
-    counts: dict[str, int] = {}
-    for path in paths:
-        diff = _git(repo, "diff", "-U0", f"main...{head_ref}", "--", path)
-        n_lines = _git(repo, "show", f"main:{path}").count("\n")
-        for line in diff.splitlines():
-            if not line.startswith("@@ "):
-                continue
-            old = line.split()[1][1:].split(",")
-            start, count = int(old[0]), int(old[1]) if len(old) > 1 else 1
-            a, b = (start, start + count - 1) if count else (max(1, start), min(n_lines, start + 1))
-            out = _git(repo, "blame", "--line-porcelain", "-L", f"{a},{b}", "main", "--", path)
-            for row in out.splitlines():
-                if row.startswith("author-mail "):
-                    email = row[len("author-mail "):].strip("<>")
-                    counts[email] = counts.get(email, 0) + 1
+    counts = Counter(email for path in paths for email in _touched_line_authors(repo, head_ref, path))
     return max(sorted(counts), key=counts.__getitem__) if counts else ""
 
 
@@ -1516,6 +1526,12 @@ def build_repo(repo: str) -> list[dict]:
 
 
 def write_cases(cases: list[dict], cases_dir: str) -> None:
+    """Write every case dir; remove stale generated dirs (prNN_* under cases_dir) that are not in this set."""
+    keep = {f"{c['pr_id']}_{c['label']['kind']}" for c in cases}
+    existing = os.listdir(cases_dir) if os.path.isdir(cases_dir) else []
+    for name in existing:
+        if re.match(r"^pr\d\d_", name) and name not in keep and os.path.isdir(os.path.join(cases_dir, name)):
+            shutil.rmtree(os.path.join(cases_dir, name))
     for c in cases:
         d = os.path.join(cases_dir, f"{c['pr_id']}_{c['label']['kind']}")
         os.makedirs(d, exist_ok=True)
@@ -1527,9 +1543,10 @@ def write_cases(cases: list[dict], cases_dir: str) -> None:
 def main() -> int:
     cases = build_repo(os.path.join(HERE, "target_repo"))
     write_cases(cases, os.path.join(HERE, "cases"))
-    print(f"built {len(cases)} cases and benchmark/target_repo ({len(AUTHORS)} simulated authors)", file=sys.stderr)
-    return 0
+    return len(cases)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    n = main()
+    sys.stderr.write(f"built {n} cases and benchmark/target_repo ({len(AUTHORS)} simulated authors)\n")
+    raise SystemExit(0)

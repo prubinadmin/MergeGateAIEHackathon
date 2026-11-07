@@ -99,6 +99,25 @@ def _cmd_owner_tests(args: argparse.Namespace) -> int:
     return 0 if gone else 1
 
 
+def _bench_baseline(args: argparse.Namespace, cases: list) -> int:
+    """bench --baseline: score a baseline on the cases. The llm baseline needs Muse Spark; a case with no report fails the run."""
+    from .baselines import METRICS, run as run_baseline
+    from .bench import score
+
+    if args.baseline == "llm" and (args.stub or not _use_llm(args)):
+        print("bench --baseline llm needs Muse Spark: it is off (--no-llm, --stub or no MUSE_API_KEY)", file=sys.stderr)
+        return 1
+    reports = run_baseline(args.baseline, cases)
+    s = score(cases, reports)
+    keep = ("cases", "bad", "clean", *METRICS[args.baseline], "missing_reports")
+    print(json.dumps({"baseline": args.baseline, **{k: s[k] for k in keep}}, indent=2))
+    if s["missing_reports"]:
+        missing = sorted(c.pr.pr_id for c in cases if c.pr.pr_id not in reports)
+        print(f"{s['missing_reports']} of {len(cases)} cases got no {args.baseline} report (call failed or unparseable): {', '.join(missing)}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="merge-gate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -277,12 +296,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no cases under {args.root}/cases", file=sys.stderr)
             return 1
         if args.baseline:
-            from .baselines import METRICS, run as run_baseline
-
-            s = score(cases, run_baseline(args.baseline, cases))
-            keep = ("cases", "bad", "clean", *METRICS[args.baseline], "missing_reports")
-            print(json.dumps({"baseline": args.baseline, **{k: s[k] for k in keep}}, indent=2))
-            return 0
+            return _bench_baseline(args, cases)
 
         from concurrent.futures import ThreadPoolExecutor
 
