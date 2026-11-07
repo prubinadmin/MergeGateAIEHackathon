@@ -20,12 +20,19 @@ pytest
 | Verdict contract | all (change by agreement) | `merge_gate/schema.py` | done |
 | PR access (diff, files, refs) | Michael | `merge_gate/pr.py` | done |
 | Deterministic verdict | Michael | `merge_gate/verify.py` (`decide`) | done |
-| Anti-gaming rules R1-R6 | Michael | `merge_gate/rules.py` | interface only |
-| Ownership resolver | Michael | `merge_gate/owners.py` | interface only |
-| Sandbox runner | Michael | `merge_gate/sandbox.py` | interface only |
-| Spec-only test writer | Michael | `merge_gate/testgen.py`, `merge_gate/llm.py` | waiting for Muse API |
+| Rules R1-R9 (anti-gaming + SQL/eval/backdoor) | Michael | `merge_gate/rules.py` | done |
+| Ownership resolver (line-level blame, recency-weighted) | Michael | `merge_gate/owners.py` | done |
+| Sandbox runner (git archive, scrubbed env, timeout) | Michael | `merge_gate/sandbox.py` | done |
+| Spec-only test writer + summary (Muse Spark) | Michael | `merge_gate/testgen.py`, `merge_gate/llm.py` | done |
 | iMessage send / reply | TAAZ | `merge_gate/notify.py` (`Notifier`, `parse_reply`, `handle_reply`) | console stub works; plug in the iMessage provider |
 | Benchmark cases + scoring | Peter | `benchmark/`, `merge_gate/bench.py` | format + scoring done; cases to build |
+
+Run the three demo scenarios (builds a throwaway multi-author repo):
+
+```bash
+python -m merge_gate demo          # rules + ownership only, no API
+python -m merge_gate demo --llm    # adds Muse Spark tests and summaries (needs MUSE_API_KEY in .env.local)
+```
 
 Try the whole loop without any API:
 
@@ -62,3 +69,8 @@ Everything in this repository was written on Nov 7, 2026, after 10:45.
 - PR access over git, deterministic verdict (`merge_gate/pr.py`, `merge_gate/verify.py`)
 - iMessage contract with a console notifier (`merge_gate/notify.py`)
 - Benchmark case format and scoring (`benchmark/README.md`, `merge_gate/bench.py`)
+- Deterministic rules R1-R9 (`merge_gate/rules.py`)
+- Line-level ownership resolver (`merge_gate/owners.py`)
+- Sandboxed pytest runner (`merge_gate/sandbox.py`)
+- Muse Spark client, spec-only test writer, iMessage summary (`merge_gate/llm.py`, `merge_gate/testgen.py`, `merge_gate/verify.py`)
+- Demo repo with three PRs; authors are simulated in commit metadata only (`merge_gate/demo.py`)

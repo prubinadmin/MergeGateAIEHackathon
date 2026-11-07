@@ -64,6 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--pr", help="PR id (with --stub)")
     g.add_argument("--case", help="benchmark case directory")
     v.add_argument("--stub", action="store_true", help="return a fixed BLOCK report")
+    v.add_argument("--llm", action="store_true", help="add Muse Spark spec-only tests and summary")
+
+    d = sub.add_parser("demo", help="build the demo repo in a temp dir and run the gate on its PRs")
+    d.add_argument("--llm", action="store_true")
+    d.add_argument("--keep", default=None, help="build the demo repo here instead of a temp dir")
 
     c = sub.add_parser("validate", help="validate a report JSON file against the contract")
     c.add_argument("path")
@@ -77,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--root", default="benchmark")
     b.add_argument("--split", choices=["train", "heldout"], default=None)
     b.add_argument("--stub", action="store_true")
+    b.add_argument("--llm", action="store_true")
 
     args = p.parse_args(argv)
 
@@ -90,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         from .bench import load_case
         from .verify import verify
 
-        print(verify(load_case(args.case)).to_json())
+        print(verify(load_case(args.case).pr, use_llm=args.llm).to_json())
         return 0
 
     if args.cmd == "validate":
@@ -117,6 +123,26 @@ def main(argv: list[str] | None = None) -> int:
                 notifier.send("<owner phone>", action.text)
         return 0
 
+    if args.cmd == "demo":
+        import tempfile
+
+        from .demo import build_demo_repo, demo_prs
+        from .notify import format_message
+        from .verify import verify
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        root = args.keep or tempfile.mkdtemp(prefix="mergegate-demo-")
+        repo = build_demo_repo(root)
+        prs = demo_prs(repo)
+        with ThreadPoolExecutor(max_workers=len(prs)) as pool:
+            results = list(pool.map(lambda p: verify(p, use_llm=args.llm), prs))
+        for pr, r in zip(prs, results):
+            print(f"===== {pr.pr_id}: {pr.title} -> {r.verdict} (route to {r.owners[0].name if r.owners else '?'})")
+            print(format_message(r))
+            print()
+        return 0
+
     if args.cmd == "bench":
         from .bench import load_cases, score
         from .verify import verify
@@ -125,9 +151,13 @@ def main(argv: list[str] | None = None) -> int:
         if not cases:
             print(f"no cases under {args.root}/cases", file=sys.stderr)
             return 1
-        reports = {
-            c.pr.pr_id: (stub_report(c.pr.pr_id) if args.stub else verify(c.pr)) for c in cases
-        }
+        from concurrent.futures import ThreadPoolExecutor
+
+        def run(c):
+            return stub_report(c.pr.pr_id) if args.stub else verify(c.pr, use_llm=args.llm)
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            reports = {c.pr.pr_id: r for c, r in zip(cases, pool.map(run, cases))}
         print(json.dumps(score(cases, reports), indent=2))
         return 0
 
