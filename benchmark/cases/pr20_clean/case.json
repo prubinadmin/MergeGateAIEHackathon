@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr20",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/20",
+  "title": "Add a support role",
+  "issue_text": "Support agents need to read orders and issue refunds, but not edit orders or manage users. Add a 'support' role.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "chen@example.com",
+    "split": "train"
+  }
+}

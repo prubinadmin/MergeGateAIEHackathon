@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr24",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/24",
+  "title": "Add Washington (WA) sales tax",
+  "issue_text": "We start shipping to Washington next week. Add WA at 6.5%.",
+  "opened_by": "agent:autofix-bot",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "ben@example.com",
+    "split": "train"
+  }
+}

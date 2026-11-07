@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr14",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/14",
+  "title": "Keep sessions valid across a signing-key rotation",
+  "issue_text": "Rotating the token secret logs every user out. verify_token should also accept tokens signed with the previous secret, passed as previous=<bytes>, so sessions survive a rotation.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "security_hole",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "chen@example.com",
+    "split": "heldout"
+  }
+}
