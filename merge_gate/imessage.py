@@ -118,7 +118,10 @@ def handle_inbound(inbound: Inbound, report: VerdictReport, pr_url: str = "") ->
 # The ACTION (block / why / ok / false alarm) is always decided by plain code above. Muse Spark only words
 # the text the owner reads, from the verdict's own facts, so the reply sounds like a person, not a template.
 
-_FORBIDDEN = re.compile(r"\b(approv\w*|merg(ed|ing)|lgtm|ship(ped)? it)\b", re.I)
+# Claims that the PR IS approved / merged / safe. "approve it yourself on GitHub" (the plain OK text) is allowed.
+_FORBIDDEN = re.compile(
+    r"\b(approv(ed|ing)|merg(ed|ing)|merge\s+(it|this|away|now)|go\s+ahead\s+and\s+merge|safe\s+to\s+(ship|merge)"
+    r"|good\s+to\s+go|ship(ped)?\s+(it|this)|lgtm)\b", re.I)
 
 
 def _facts(report: VerdictReport, pr_url: str) -> str:
