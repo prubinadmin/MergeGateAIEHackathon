@@ -224,6 +224,28 @@ def test_gate_reverts_are_skipped(repo, capsys):
     assert "revert-of-revert" in capsys.readouterr().err
 
 
+def test_squash_of_logged_revert_is_skipped(repo):
+    sha = merge(repo, "pr/demo-1")
+    branch = rollback.rollback(repo, sha)["branch"]
+    logged = store.read(kind="rollback")[-1]["data"]
+    assert logged["revert_sha"] == out(repo, "rev-parse", branch) and logged["revert_tree"] == out(repo, "rev-parse", f"{branch}^{{tree}}")
+    git(repo, "merge", "-q", "--squash", branch)  # GitHub-style squash merge: a new commit, same parent and tree
+    git(repo, "commit", "-q", "-m", f"Revert {sha[:12]}: blocked by Merge Gate (#12)", author=("Maintainer", "m@example.com"))
+    result = rollback.rollback(repo, out(repo, "rev-parse", "HEAD"))
+    assert result["action"] == "skip" and result["verdict"] is None and revert_branches(repo) == [branch]
+
+
+def test_forged_gate_revert_is_re_verified(repo, caplog):
+    # the message is attacker-controlled: a direct push that only claims to be a gate revert must not be skipped
+    git(repo, "rm", "-q", "tests/test_pricing.py")
+    git(repo, "commit", "-q", "-m", "revert: Merge Gate blocked 0123456789ab (R1_DELETED_TEST)", author=("Mallory", "m@example.com"))
+    sha = out(repo, "rev-parse", "HEAD")
+    result = rollback.rollback(repo, sha)
+    assert result["verdict"] == "BLOCK" and result["action"] == "revert_branch" and revert_branches(repo) == [result["branch"]]
+    assert "no logged revert matches" in result["note"] and "no logged revert matches" in caplog.text
+    assert store.read(kind="rollback")[-1]["data"]["note"] == result["note"]
+
+
 def test_squash_merged_gate_revert_is_skipped():
     assert rollback.GATE_REVERT_RE.match("Revert 0123456789ab: blocked by Merge Gate (#12)\n\n...")
     assert rollback.GATE_REVERT_RE.match("Merge pull request #3 from acme/merge-gate/revert-0123456789ab\n")
@@ -265,13 +287,13 @@ def test_found_pr_supplies_issue_text_and_author(repo, monkeypatch):
     assert (seen[0].issue_text, seen[0].opened_by, seen[0].title) == ("Make apply_discount faster.", "agent-bot", "Speed up discounts")
 
 
-def test_without_github_warns_and_uses_commit_message(repo, monkeypatch, capsys):
+def test_without_github_warns_and_uses_commit_message(repo, monkeypatch, caplog):
     from merge_gate import verify as verify_mod
     sha = merge(repo, "pr/demo-1")
     seen, real = [], verify_mod.verify
     monkeypatch.setattr(verify_mod, "verify", lambda pr, **kw: seen.append(pr) or real(pr, **kw))
     assert rollback.rollback(repo, sha)["action"] == "revert_branch"
-    assert "override can't be checked" in capsys.readouterr().err
+    assert "override can't be checked" in caplog.text  # logged by the library; the CLI prints it
     assert seen[0].issue_text == out(repo, "log", "-1", "--format=%B", sha) and seen[0].opened_by == "Maintainer"
 
 
