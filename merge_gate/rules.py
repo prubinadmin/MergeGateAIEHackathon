@@ -25,11 +25,11 @@ RULE_IDS = {
     "R7_DANGEROUS_CALL": "new SQL string building, eval/exec, shell=True or unsafe deserialization",
     "R8_BACKDOOR_LITERAL": "new hardcoded credential or magic value that grants access",
     "R9_UNPARSEABLE": "a changed Python file does not parse, so the rules could not check it",
-    "R10_RUNTIME_INTEGRITY": "code is broken when trying to run (syntax error, broken import, or runtime smoke failure)",
-    "R11_PERFORMANCE_REGRESSION": "performance slowed down (new nested O(N^2) loops, blocking sleep/sync I/O, or unindexed scans)",
-    "R12_COMPLEXITY_INFLATION": "code simplicity violation (function refactored to be significantly more complex, high cyclomatic depth)",
-    "R13_STYLE_INCONSISTENCY": "code style conventions inconsistent with existing codebase (naming style drift, dropped typing)",
-    "R14_REGULATORY_STYLE_VIOLATION": "code style regulations violation (wildcard imports, bare excepts, leftover debug calls)",
+    "R10_RUNTIME_INTEGRITY": "the PR removes a public name that other code still imports (ImportError at runtime)",
+    "R11_PERFORMANCE_REGRESSION": "an edited function gains a nested loop or a blocking sleep (review)",
+    "R12_COMPLEXITY_INFLATION": "an edited function gets much more complex, or a new one is very complex (review)",
+    "R13_STYLE_INCONSISTENCY": "new camelCase names in a snake_case module, or dropped type hints (review)",
+    "R14_REGULATORY_STYLE_VIOLATION": "new wildcard import, bare except, swallowed exception, print (review) or debugger call (block)",
 }
 
 SENSITIVE_NAME = re.compile(r"auth|login|token|passw|secret|permission|admin|role|access|session|verify", re.I)
@@ -401,72 +401,123 @@ def _all_test_literals(pr: PullRequest) -> set:
     return {v for v in lits if v not in (0, 1, -1, "", None) and not (isinstance(v, str) and len(v) < 2)}
 
 
-# --- Benchmark Verification Rules (Integrity, Performance, Simplicity, Style) ---
+# --- Integrity, performance, simplicity, style (R10-R14) ---------------------------
+# Like R7, each check compares the PR head with base and reports only what the PR introduces:
+# code that was already there is the owner's earlier decision, not this PR's. Only changes that
+# break or hang production block; quality signals (loops, complexity, style) go to REVIEW.
 
-def r10_runtime_integrity(chs: list[FileChange]) -> list[Evidence]:
-    """Check: Code is not broken when trying to run."""
-    out = []
-    for c in chs:
-        if c.head is not None and c.head_tree is None:
-            out.append(_ev("R10_RUNTIME_INTEGRITY", f"{c.path} has fatal syntax or unparseable errors preventing execution", c.path, None, severity="block"))
-            continue
-        if c.head_tree is not None:
-            # Check for unresolved duplicate definitions or empty critical bodies
-            for node in ast.walk(c.head_tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if not node.body:
-                        out.append(_ev("R10_RUNTIME_INTEGRITY", f"{c.path}:{node.lineno} function {node.name} has empty executable body", c.path, node.lineno, severity="block"))
+
+def _changed_functions(c: FileChange) -> dict[str, tuple[ast.AST | None, ast.AST]]:
+    """name -> (base version or None if new, head version), for functions the PR adds or edits."""
+    base_fns = _functions(c.base_tree)
+    out: dict[str, tuple[ast.AST | None, ast.AST]] = {}
+    for name, fn in _functions(c.head_tree).items():
+        old = base_fns.get(name)
+        if old is None or ast.dump(old) != ast.dump(fn):
+            out[name] = (old, fn)
     return out
 
 
-def _has_nested_loop(node: ast.AST) -> bool:
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.For, ast.While, ast.AsyncFor)):
-            for sub in ast.walk(child):
-                if sub is not child and isinstance(sub, (ast.For, ast.While, ast.AsyncFor)):
-                    return True
-        elif _has_nested_loop(child):
-            return True
-    return False
+def _new_items(base: list[tuple[str, int]], head: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """Items (key, line) whose key occurs more often at head than at base."""
+    seen: dict[str, int] = {}
+    for key, _ in base:
+        seen[key] = seen.get(key, 0) + 1
+    out = []
+    for key, line in head:
+        if seen.get(key, 0) > 0:
+            seen[key] -= 1
+        else:
+            out.append((key, line))
+    return out
+
+
+def _public_names(tree: ast.Module | None) -> set[str]:
+    names: set[str] = set()
+    if tree is None:
+        return names
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return {n for n in names if not n.startswith("_")}
+
+
+def r10_runtime_integrity(chs: list[FileChange], pr: PullRequest) -> list[Evidence]:
+    """The PR removes or renames a public name that other code still imports: an ImportError at runtime."""
+    removed: dict[str, set[str]] = {}
+    for c in chs:
+        if c.is_test or c.base_tree is None or (c.head is not None and c.head_tree is None):
+            continue  # unparseable heads are R9's job
+        gone = _public_names(c.base_tree) - _public_names(c.head_tree)
+        if gone:
+            removed[module_name(c.path)] = gone
+    if not removed:
+        return []
+    out = []
+    try:
+        files = pr.git("ls-tree", "-r", "--name-only", pr.head_ref).splitlines()
+    except Exception:
+        return out
+    for path in files:
+        if not path.endswith(".py"):
+            continue
+        tree = _parse(pr.file_at(pr.head_ref, path))
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in removed:
+                for alias in node.names:
+                    if alias.name in removed[node.module]:
+                        out.append(_ev("R10_RUNTIME_INTEGRITY",
+                                       f"{path}:{node.lineno} imports {alias.name} from {node.module}, which this PR removes",
+                                       path, node.lineno))
+    return out
+
+
+def _nested_loop_line(fn: ast.AST) -> int | None:
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.For, ast.While, ast.AsyncFor)):
+            for sub in ast.walk(node):
+                if sub is not node and isinstance(sub, (ast.For, ast.While, ast.AsyncFor)):
+                    return node.lineno
+    return None
+
+
+def _sleeps(fn: ast.AST | None) -> list[tuple[str, int]]:
+    if fn is None:
+        return []
+    return [("sleep", n.lineno) for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and _call_name(n) in ("time.sleep", "sleep")]
 
 
 def r11_performance_regression(chs: list[FileChange]) -> list[Evidence]:
-    """Check: The performance of the application is not slowed down when pushing new change."""
+    """A changed function gains a nested loop or a blocking sleep it did not have before. Review only."""
     out = []
     for c in chs:
         if c.is_test or c.head_tree is None:
             continue
-        base_had_nested = _has_nested_loop(c.base_tree) if c.base_tree else False
-        head_has_nested = _has_nested_loop(c.head_tree)
-        if head_has_nested and not base_had_nested:
-            # Find the line of the offending nested loop
-            for node in ast.walk(c.head_tree):
-                if isinstance(node, (ast.For, ast.While, ast.AsyncFor)):
-                    for sub in ast.walk(node):
-                        if sub is not node and isinstance(sub, (ast.For, ast.While, ast.AsyncFor)):
-                            out.append(_ev("R11_PERFORMANCE_REGRESSION", f"{c.path}:{node.lineno} introduces nested O(N^2) loop bottleneck", c.path, node.lineno, severity="block"))
-                            break
-                    if out and out[-1].id == "R11_PERFORMANCE_REGRESSION":
-                        break
-
-        # Check for blocking time.sleep() or unbuffered sync calls inside loop
-        for node in ast.walk(c.head_tree):
-            if isinstance(node, ast.Call):
-                call = _call_name(node)
-                if call in ("time.sleep", "sleep") and not c.is_test:
-                    out.append(_ev("R11_PERFORMANCE_REGRESSION", f"{c.path}:{node.lineno} adds blocking synchronous sleep() causing application slowdown", c.path, node.lineno, severity="block"))
+        for name, (old, new) in _changed_functions(c).items():
+            line = _nested_loop_line(new)
+            if line and (old is None or _nested_loop_line(old) is None):
+                out.append(_ev("R11_PERFORMANCE_REGRESSION", f"{name}() in {c.path} gains a nested loop (possible O(n^2))", c.path, line, severity="review"))
+            for _, ln in _new_items(_sleeps(old), _sleeps(new)):
+                out.append(_ev("R11_PERFORMANCE_REGRESSION", f"{name}() in {c.path} adds a blocking sleep()", c.path, ln, severity="review"))
     return out
 
 
 def _cyclomatic_complexity(fn: ast.AST) -> int:
     complexity = 1
     for node in ast.walk(fn):
-        if isinstance(node, (ast.If, ast.While, ast.For, ast.AsyncFor, ast.ExceptHandler, ast.With, ast.AsyncWith, ast.Assert)):
+        if isinstance(node, (ast.If, ast.While, ast.For, ast.AsyncFor, ast.ExceptHandler, ast.IfExp, ast.comprehension)):
             complexity += 1
         elif isinstance(node, ast.BoolOp):
             complexity += max(0, len(node.values) - 1)
-        elif isinstance(node, getattr(ast, "Match", ())) :
-            complexity += len(getattr(node, "cases", []))
+        elif isinstance(node, getattr(ast, "match_case", ())):
+            complexity += 1
     return complexity
 
 
@@ -477,96 +528,94 @@ def _max_nesting_depth(node: ast.AST, current: int = 0) -> int:
             d = _max_nesting_depth(child, current + 1)
         else:
             d = _max_nesting_depth(child, current)
-        if d > max_d:
-            max_d = d
+        max_d = max(max_d, d)
     return max_d
 
 
 def r12_complexity_inflation(chs: list[FileChange]) -> list[Evidence]:
-    """Check: Ensures code simplicity so functions are not refactored to be more complex."""
+    """A function the PR edits gets much more complex, or a new function is very complex. Review only."""
     out = []
     for c in chs:
         if c.is_test or c.head_tree is None:
             continue
-        base_fns = _functions(c.base_tree)
-        head_fns = _functions(c.head_tree)
-
-        for name, head_fn in head_fns.items():
-            head_cc = _cyclomatic_complexity(head_fn)
-            head_depth = _max_nesting_depth(head_fn)
-
-            if name in base_fns:
-                base_cc = _cyclomatic_complexity(base_fns[name])
-                if head_cc >= base_cc + 4:
-                    out.append(_ev("R12_COMPLEXITY_INFLATION", f"{c.path}:{head_fn.lineno} function {name} refactored with +{head_cc - base_cc} cyclomatic complexity ({base_cc} -> {head_cc})", c.path, head_fn.lineno, severity="block"))
-                elif head_depth >= 4:
-                    out.append(_ev("R12_COMPLEXITY_INFLATION", f"{c.path}:{head_fn.lineno} function {name} introduces excessive nesting depth ({head_depth} levels)", c.path, head_fn.lineno, severity="review"))
-            else:
-                if head_cc > 8:
-                    out.append(_ev("R12_COMPLEXITY_INFLATION", f"{c.path}:{head_fn.lineno} new function {name} exceeds simplicity threshold (cyclomatic complexity {head_cc})", c.path, head_fn.lineno, severity="review"))
+        for name, (old, new) in _changed_functions(c).items():
+            cc, depth = _cyclomatic_complexity(new), _max_nesting_depth(new)
+            if old is not None:
+                old_cc, old_depth = _cyclomatic_complexity(old), _max_nesting_depth(old)
+                if cc >= old_cc + 4:
+                    out.append(_ev("R12_COMPLEXITY_INFLATION", f"{name}() in {c.path} goes from complexity {old_cc} to {cc}", c.path, new.lineno, severity="review"))
+                elif depth >= 4 and depth > old_depth:
+                    out.append(_ev("R12_COMPLEXITY_INFLATION", f"{name}() in {c.path} now nests {depth} levels deep (was {old_depth})", c.path, new.lineno, severity="review"))
+            elif cc > 10:
+                out.append(_ev("R12_COMPLEXITY_INFLATION", f"new function {name}() in {c.path} has complexity {cc}", c.path, new.lineno, severity="review"))
     return out
+
+
+SNAKE = re.compile(r"^_*[a-z][a-z0-9_]*$")
+CAMEL = re.compile(r"^_*[a-z]+[A-Z][a-zA-Z0-9]*$")
 
 
 def r13_style_inconsistency(chs: list[FileChange]) -> list[Evidence]:
-    """Check: Code style conventions are not inconsistent with existing code styling."""
+    """New camelCase functions in a snake_case module, or type hints dropped from an edited function. Review only."""
     out = []
     for c in chs:
-        if c.head_tree is None or c.base_tree is None:
+        if c.is_test or c.head_tree is None or c.base_tree is None:
             continue
-        base_fns = _functions(c.base_tree)
-        head_fns = _functions(c.head_tree)
-
-        # Detect naming conventions: snake_case vs camelCase
-        base_snake = sum(1 for n in base_fns if re.match(r"^[a-z_][a-z0-9_]*$", n.split(".")[-1]))
-        total_base = len(base_fns)
-
-        if total_base > 0 and (base_snake / total_base) >= 0.8:
-            # Codebase strictly uses snake_case, check if head introduces camelCase
-            for name, fn in head_fns.items():
-                short = name.split(".")[-1]
-                if re.match(r"^[a-z]+[A-Z][a-zA-Z0-9]*$", short) and not short.startswith("test_"):
-                    out.append(_ev("R13_STYLE_INCONSISTENCY", f"{c.path}:{fn.lineno} introduces camelCase '{short}' in a codebase adhering to snake_case naming", c.path, fn.lineno, severity="review"))
-
-        # Detect type annotation dropping (regression in typing consistency)
-        for name, base_fn in base_fns.items():
-            if name in head_fns:
-                head_fn = head_fns[name]
-                base_typed = base_fn.returns is not None or any(a.annotation for a in base_fn.args.args)
-                head_typed = head_fn.returns is not None or any(a.annotation for a in head_fn.args.args)
-                if base_typed and not head_typed:
-                    out.append(_ev("R13_STYLE_INCONSISTENCY", f"{c.path}:{head_fn.lineno} removed type annotations from {name}, violating typing consistency", c.path, head_fn.lineno, severity="review"))
+        base_names = [n.split(".")[-1] for n in _functions(c.base_tree)]
+        snake_module = bool(base_names) and sum(bool(SNAKE.match(n)) for n in base_names) / len(base_names) >= 0.8
+        for name, (old, new) in _changed_functions(c).items():
+            short = name.split(".")[-1]
+            if old is None and snake_module and CAMEL.match(short):
+                out.append(_ev("R13_STYLE_INCONSISTENCY", f"new function {short}() in {c.path} is camelCase in a snake_case module", c.path, new.lineno, severity="review"))
+            if old is not None:
+                had = old.returns is not None or any(a.annotation for a in old.args.args)
+                has = new.returns is not None or any(a.annotation for a in new.args.args)
+                if had and not has:
+                    out.append(_ev("R13_STYLE_INCONSISTENCY", f"{name}() in {c.path} loses its type hints", c.path, new.lineno, severity="review"))
     return out
 
 
+def _style_items(tree: ast.Module | None, path: str) -> list[tuple[str, int]]:
+    items: list[tuple[str, int]] = []
+    if tree is None:
+        return items
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+            items.append((f"wildcard:{node.module}", node.lineno))
+        elif isinstance(node, ast.ExceptHandler):
+            if node.type is None:
+                items.append(("bare_except", node.lineno))
+            elif len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                items.append(("except_pass", node.lineno))
+        elif isinstance(node, ast.Call):
+            name = _call_name(node)
+            if name in ("breakpoint", "pdb.set_trace", "ipdb.set_trace"):
+                items.append(("debugger", node.lineno))
+            elif name == "print" and not is_test_path(path) and not path.endswith(("cli.py", "__main__.py")):
+                items.append(("print", node.lineno))
+    return items
+
+
+STYLE_TEXT = {
+    "bare_except": ("a bare except:", "review"),
+    "except_pass": ("an exception silently swallowed (except ...: pass)", "review"),
+    "debugger": ("a debugger breakpoint that halts the process", "block"),
+    "print": ("a leftover print() in library code", "review"),
+}
+
+
 def r14_regulatory_style_violation(chs: list[FileChange]) -> list[Evidence]:
-    """Check: Matches with existing rules and regulations of code styling."""
+    """New wildcard imports, bare excepts, swallowed exceptions, prints (review); a new debugger call blocks."""
     out = []
     for c in chs:
         if c.head_tree is None:
             continue
-
-        # 1. Ban wildcard imports
-        for node in ast.walk(c.head_tree):
-            if isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    if alias.name == "*":
-                        out.append(_ev("R14_REGULATORY_STYLE_VIOLATION", f"{c.path}:{node.lineno} wildcard import 'from {node.module} import *' violates styling regulations", c.path, node.lineno, severity="block"))
-
-        # 2. Ban bare except: or silent exception swallowing
-        for node in ast.walk(c.head_tree):
-            if isinstance(node, ast.ExceptHandler):
-                if node.type is None:
-                    out.append(_ev("R14_REGULATORY_STYLE_VIOLATION", f"{c.path}:{node.lineno} bare 'except:' clause violates error handling regulations", c.path, node.lineno, severity="block"))
-                elif isinstance(node.body, list) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
-                    out.append(_ev("R14_REGULATORY_STYLE_VIOLATION", f"{c.path}:{node.lineno} silent exception swallowing ('except: pass') violates code safety regulations", c.path, node.lineno, severity="block"))
-
-        # 3. Ban debugging print() / debugger statements in non-cli non-test code
-        if not c.is_test and not c.path.endswith("cli.py"):
-            for node in ast.walk(c.head_tree):
-                if isinstance(node, ast.Call):
-                    name = _call_name(node)
-                    if name in ("print", "breakpoint", "pdb.set_trace"):
-                        out.append(_ev("R14_REGULATORY_STYLE_VIOLATION", f"{c.path}:{node.lineno} debug '{name}()' call committed in production module", c.path, node.lineno, severity="review"))
+        for key, line in _new_items(_style_items(c.base_tree, c.path), _style_items(c.head_tree, c.path)):
+            if key.startswith("wildcard:"):
+                text, sev = f"a wildcard import from {key.split(':', 1)[1]}", "review"
+            else:
+                text, sev = STYLE_TEXT[key]
+            out.append(_ev("R14_REGULATORY_STYLE_VIOLATION", f"{c.path}:{line} adds {text}", c.path, line, severity=sev))
     return out
 
 
@@ -578,7 +627,6 @@ RULES: list[Rule] = [
     r4_mocked_subject,
     r6_out_of_scope_tests,
     r7_dangerous_call,
-    r10_runtime_integrity,
     r11_performance_regression,
     r12_complexity_inflation,
     r13_style_inconsistency,
@@ -596,5 +644,6 @@ def check_rules(pr: PullRequest) -> list[Evidence]:
     for rule in RULES:
         evidence.extend(rule(chs))
     evidence.extend(r5_r8_literal_special_cases(chs, _all_test_literals(pr)))
+    evidence.extend(r10_runtime_integrity(chs, pr))
     return evidence
 

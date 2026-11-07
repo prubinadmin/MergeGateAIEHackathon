@@ -133,23 +133,38 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
     return report
 
 
-def harden_gate(attacker_evasion: dict, candidate_rule_id: str | None = None) -> dict:
-    """Hardens the reviewer when an attacker agent bypass is caught or reported.
+def harden_gate(attacker_evasion: dict, candidate_rule_id: str | None = None, bench_root: str = "benchmark",
+                use_llm: bool = False) -> dict:
+    """An attacker PR got past the gate: run one real learning round and report what it measured.
 
-    Synthesizes a specialized invariant detector, validates across held-out cases,
-    and updates the active gate version to vN+1.
+    attacker_evasion: {"pr_id": <benchmark case id that got through>, "kind": ..., "description": ...}.
+    The bypass must be a labelled train-split case, so the learner can see it was missed; candidate
+    rule changes are scored on the held-out split and adopted only if catch rate does not drop and
+    false blocks do not rise (merge_gate/learn.py). Nothing here reports a result it did not compute.
     """
-    global GATE_VERSION
-    current_ver = float(GATE_VERSION.replace("v", ""))
-    new_version = f"v{round(current_ver + 0.1, 1)}"
-    GATE_VERSION = new_version
-    
-    rule_id = candidate_rule_id or f"HR_{attacker_evasion.get('kind', 'ATTACK').upper()}"
-    return {
-        "hardened": True,
-        "new_version": new_version,
-        "synthesized_rule": rule_id,
-        "vector_neutralized": attacker_evasion.get("description", "novel agent evasion attempt"),
-        "benchmark_status": "PASSED_ZERO_FALSE_BLOCK_REGRESSION"
-    }
+    from .bench import load_cases
+    from .learn import collect_raw, false_alarms_from_log, learn_round
 
+    cases = load_cases(bench_root)
+    if not cases:
+        return {"hardened": False, "reason": f"no benchmark cases under {bench_root}/cases to validate a patch against"}
+    pr_id = attacker_evasion.get("pr_id")
+    known = {c.pr.pr_id: c for c in cases}
+    if pr_id and pr_id not in known:
+        return {"hardened": False, "reason": f"{pr_id} is not a labelled benchmark case; add it to the train split first"}
+    if pr_id and known[pr_id].label.split != "train":
+        return {"hardened": False, "reason": f"{pr_id} is held out; learning from it would contaminate the score"}
+
+    raw = collect_raw(cases, use_llm=use_llm)
+    result = learn_round(cases, raw, false_alarms_from_log())
+    return {
+        "hardened": result["adopted"] is not None,
+        "from_version": result["from"],
+        "new_version": result["to"],
+        "adopted_change": result["adopted"],
+        "requested_rule": candidate_rule_id,
+        "attack": attacker_evasion.get("description", ""),
+        "heldout_before": result["heldout_before"],
+        "heldout_after": result["heldout_after"],
+        "candidates": result["candidates"],
+    }
