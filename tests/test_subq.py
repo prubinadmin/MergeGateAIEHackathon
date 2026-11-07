@@ -40,6 +40,7 @@ def make_pr(tmp_path, opened_by="", issue="", block=False):
 def env(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # no stray .env; the SubQ cache lands in tmp
     monkeypatch.setenv("SUBQ_API_KEY", "test-key")
+    monkeypatch.delenv("CI", raising=False)
     monkeypatch.setattr(subq.time, "sleep", lambda s: None)
 
 
@@ -96,6 +97,19 @@ def test_answers_are_cached_and_routing_is_in_run_hash(pr, monkeypatch):
     assert len(calls) == 1 and r1.run_hash == r2.run_hash  # replayed from .cache/subq
     assert os.listdir(subq.CACHE_DIR)
     assert verify(pr, use_subq=False).run_hash != r1.run_hash
+    monkeypatch.setenv("CI", "true")  # CI never trusts a cache file that could come from the PR checkout
+    verify(pr, use_subq=True)
+    assert len(calls) == 2
+
+
+def test_nan_or_out_of_range_answers_are_ignored(pr, monkeypatch):
+    nan = float("nan")
+    pool = [Owner("A", "a@x.com", 3, "", 0.5), Owner("B", "b@x.com", 3, "", 0.5)]
+    for conf in (nan, 7.0, -1.0):
+        assert subq.choose_owner({"owner": {"choice": "c1", "confidence": conf}}, pool) is None
+    assert subq.choose_owner({"owner": {"choice": "c-1", "confidence": 0.9}}, pool) is None
+    assert subq.urgency({"urgency": {"probabilities": {"1": nan}}}, "PASS") == ("", None)
+    assert subq.urgency({"urgency": {"probabilities": {"1": 3.0}}}, "PASS") == ("", None)
 
 
 def test_low_confidence_keeps_blame_order(pr, monkeypatch):
@@ -153,6 +167,7 @@ def test_urgency_floor_block_always_pages():
     assert subq.urgency(fyi, "PASS") == ("fyi", 0.05)
     assert subq.urgency({"urgency": {"probabilities": {"1": 0.7}}}, "PASS") == ("page", 0.7)  # may escalate a PASS
     assert subq.urgency({}, "BLOCK") == ("page", None)
+    assert subq.urgency({}, "PASS") == ("", None)
 
 
 def test_block_verdict_pages_even_when_subq_says_fyi(env, tmp_path, monkeypatch):
@@ -177,7 +192,7 @@ def test_http_error_retries_once_then_falls_back(pr, monkeypatch):
     calls = fake_api(monkeypatch, urllib.error.HTTPError("u", 503, "down", {}, io.BytesIO(b"{}")))
     r = verify(pr, use_subq=True)
     assert r.owners[0].email == "peter@example.com"
-    assert (r.routed_by, r.route_confidence, r.urgency, r.urgency_p) == ("blame", None, "fyi", None)  # PASS fallback
+    assert (r.routed_by, r.route_confidence, r.urgency, r.urgency_p) == ("blame", None, "", None)  # unassessed, never a silent FYI
     assert len(calls) == 2  # one call, one retry
 
 

@@ -65,6 +65,8 @@ def decide(state, questions: dict, *, timeout_s: float = REQUEST_TIMEOUT_S, retr
     body = {"model": os.environ.get("SUBQ_MODEL") or DEFAULT_MODEL, "state": state, "questions": questions}
     data = json.dumps(body, sort_keys=True).encode("utf-8")
     cache_path = os.path.join(CACHE_DIR, hashlib.sha256(data).hexdigest() + ".json")
+    # in CI the cwd is the PR's checkout, where an attacker could commit a forged .cache/subq answer
+    use_cache = use_cache and not os.environ.get("CI")
     if use_cache and os.path.exists(cache_path):
         with open(cache_path, encoding="utf-8") as f:
             return json.load(f)["answers"]
@@ -141,20 +143,25 @@ def choose_owner(answers: dict, pool: list[Owner]) -> tuple[Owner, float] | None
         i, conf = int(str(ans["choice"]).removeprefix("c")), float(ans["confidence"])
     except (KeyError, TypeError, ValueError):
         return None
-    if not 0 <= i < len(pool) or conf < SUBQ_MIN_CONFIDENCE:
+    if not 0 <= i < len(pool) or not SUBQ_MIN_CONFIDENCE <= conf <= 1.0:  # also rejects NaN
         return None
     return pool[i], conf
 
 
 def urgency(answers: dict, verdict: Verdict) -> tuple[str, float | None]:
-    """(label, SubQ's probability of paging). Floor: anything but PASS pages; SubQ can only escalate a PASS."""
+    """(label, SubQ's probability of paging). Floor: anything but PASS pages; SubQ can only escalate a PASS.
+    No usable answer on a PASS -> "" (unassessed: the owner gets the full message, never a silent FYI)."""
     try:
         p: float | None = float(answers["urgency"]["probabilities"]["1"])
     except (KeyError, TypeError, ValueError):
         p = None
+    if p is not None and not 0.0 <= p <= 1.0:  # also rejects NaN
+        p = None
     if verdict != "PASS":
         return "page", p
-    return ("page" if p is not None and p >= 0.5 else "fyi"), p
+    if p is None:
+        return "", None
+    return ("page" if p >= 0.5 else "fyi"), p
 
 
 def route(pr: PullRequest, owners: list[Owner], evidence: list[Evidence], verdict: Verdict) -> tuple[list[Owner], dict]:
