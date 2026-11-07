@@ -53,7 +53,7 @@ def llm_summary(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], own
 
 
 def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None) -> VerdictReport:
-    """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary.
+    """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary. Owners' stored rules always run.
 
     config: "current" = the adopted gate version in gate_versions/, None = raw rules (used by the learner).
     on_stage(name, status, data): called as each real stage starts and finishes (the UI's live lanes).
@@ -98,6 +98,13 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
         )
     else:
         emit("testgen", "skipped", reason="no MUSE_API_KEY or --no-llm")
+
+    from .owner_tests import check_owner_tests
+
+    # stored owner rules: running them needs no model, so they run with or without Muse
+    ot, ms = timed("owner_tests", lambda: check_owner_tests(pr, timeout_s))
+    evidence = evidence + ot
+    emit("owner_tests", "done", ms=ms, evidence=[e.__dict__ for e in ot])
 
     from .learn import apply_config, load_current
 
