@@ -31,7 +31,7 @@ function nodeStates(c: CaseState): Record<NodeKey, StageStatus> {
     writer: st('testgen'),
     sandbox: st('testgen'),
     decide: st('decide'),
-    phone: c.bubbles.length ? 'done' : st('summary') === 'start' ? 'start' : 'idle',
+    phone: c.bubbles.length || st('page') === 'done' ? 'done' : st('summary') === 'start' || st('page') === 'start' ? 'start' : 'idle',
     merge: c.report ? 'done' : 'idle',
   };
 }
@@ -501,12 +501,43 @@ export default function WarRoom() {
               )}
             </Lane>
 
+            <Lane title="OWNER RULES (TAUGHT BY TEXT)" ev={c.stages.owner_tests}>
+              {c.stages.owner_tests?.status === 'done' && (
+                (c.stages.owner_tests.evidence || []).length
+                  ? <span className="text-red-300">{c.stages.owner_tests.evidence.length} rule{c.stages.owner_tests.evidence.length === 1 ? '' : 's'} an owner taught failed: {c.stages.owner_tests.evidence.map((e: Evidence) => e.detail).join('; ')}</span>
+                  : <span className="text-zinc-400">No rule an owner taught by text fails on this PR.</span>
+              )}
+            </Lane>
+
             <Lane title="DECIDE() · PLAIN CODE" ev={c.stages.decide}>
-              {c.stages.decide && <span>Verdict <b>{c.stages.decide.verdict}</b> from {r?.evidence.length ?? '…'} evidence items · gate {c.stages.decide.gate_version}</span>}
+              {c.stages.decide && (
+                <span>Verdict <b>{c.stages.decide.verdict}</b> from {r?.evidence.length ?? ['rules', 'testgen', 'owner_tests'].reduce((n, k) => n + ((c.stages[k]?.evidence || []).length), 0)} evidence items · gate {c.stages.decide.gate_version}</span>
+              )}
+            </Lane>
+
+            <Lane title="ROUTING (SUBQ SNAP)" ev={c.stages.routing}>
+              {c.stages.routing?.status === 'start' && <span className="text-zinc-400">Asking SubQ who should get this and how urgently…</span>}
+              {c.stages.routing?.status === 'skipped' && <span className="text-zinc-500">Skipped ({c.stages.routing.reason}); git blame picks the owner.</span>}
+              {c.stages.routing?.status === 'done' && (
+                <span>
+                  Goes to <b>{c.stages.routing.to?.name || 'the code owner'}</b>
+                  {' · '}{c.stages.routing.routed_by === 'subq' ? `picked by SubQ (${Math.round(100 * (c.stages.routing.route_confidence ?? 0))}% sure)` : 'git blame owner kept'}
+                  {c.stages.routing.urgency && <> · urgency <b>{c.stages.routing.urgency}</b></>}
+                </span>
+              )}
             </Lane>
 
             <Lane title="MESSAGE TO THE OWNER" ev={c.stages.summary}>
               {c.stages.summary?.summary && <span>“{c.stages.summary.summary}”</span>}
+            </Lane>
+
+            <Lane title="TEXT TO THE OWNER'S PHONE" ev={c.stages.page}>
+              {c.stages.page?.status === 'start' && <span className="text-zinc-400">Sending the iMessage…</span>}
+              {c.stages.page?.status === 'done' && (
+                c.stages.page.error ? <span className="text-amber-300">Not texted: {c.stages.page.error}</span>
+                  : c.stages.page.skipped ? <span className="text-zinc-400">Not texted: {c.stages.page.skipped}</span>
+                    : <span>Texted <b>{c.stages.page.to?.name || c.stages.page.to || 'the owner'}</b>{c.stages.page.urgency === 'fyi' ? ' a one-line FYI' : ''} · {String(c.stages.page.sent)}</span>
+              )}
             </Lane>
 
             {r && (
