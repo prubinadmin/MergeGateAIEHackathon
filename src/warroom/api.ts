@@ -66,6 +66,7 @@ export interface DemoPr {
   opened_by: string;
   files: string[];
   diff: string;
+  github_url?: string;  // set when the case is a real GitHub PR (MERGE_GATE_DEMO_GITHUB)
 }
 
 export interface Stats {
