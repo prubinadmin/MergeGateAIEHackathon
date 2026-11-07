@@ -135,6 +135,37 @@ def _cmd_github(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def _cmd_log(args) -> int:
+    """`merge-gate log` (moved out of main() so each subcommand stays small)."""
+    from . import store
+
+    ok, bad = store.verify_chain()
+    for rec in store.read()[-args.tail:]:
+        d = rec["data"]
+        what = f"{d.get('pr_id')} {d.get('verdict') or d.get('command')}" + (f" -> {d['action']}" if "action" in d else "")
+        print(f"{rec['at']} {rec['kind']:<8} {what}")
+    print(f"hash chain: {'OK' if ok else f'BROKEN at record {bad}'}")
+    return 0 if ok else 1
+
+
+def _cmd_learn(args) -> int:
+    """`merge-gate learn` (moved out of main() so each subcommand stays small)."""
+    from .bench import load_cases
+    from .learn import collect_raw, false_alarms_from_log, learn_round
+
+    cases = load_cases(args.root)
+    if not cases:
+        print(f"no cases under {args.root}/cases", file=sys.stderr)
+        return 1
+    raw = collect_raw(cases, use_llm=_use_llm(args))
+    result = learn_round(cases, raw, false_alarms_from_log())
+    print(json.dumps({k: v for k, v in result.items() if k != "candidates"}, indent=2))
+    for c in result["candidates"]:
+        print(f"  {'KEEP' if c['adopted_so_far'] else 'roll back'}: {c['change']}  held-out {c['heldout']['catch_rate']:.2f} catch / {c['heldout']['false_block_rate']:.2f} false-block")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="merge-gate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -272,15 +303,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "log":
-        from . import store
+        return _cmd_log(args)
 
-        ok, bad = store.verify_chain()
-        for rec in store.read()[-args.tail:]:
-            d = rec["data"]
-            what = f"{d.get('pr_id')} {d.get('verdict') or d.get('command')}" + (f" -> {d['action']}" if "action" in d else "")
-            print(f"{rec['at']} {rec['kind']:<8} {what}")
-        print(f"hash chain: {'OK' if ok else f'BROKEN at record {bad}'}")
-        return 0 if ok else 1
 
     if args.cmd == "demo":
         import tempfile
@@ -304,19 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "learn":
-        from .bench import load_cases
-        from .learn import collect_raw, false_alarms_from_log, learn_round
+        return _cmd_learn(args)
 
-        cases = load_cases(args.root)
-        if not cases:
-            print(f"no cases under {args.root}/cases", file=sys.stderr)
-            return 1
-        raw = collect_raw(cases, use_llm=_use_llm(args))
-        result = learn_round(cases, raw, false_alarms_from_log())
-        print(json.dumps({k: v for k, v in result.items() if k != "candidates"}, indent=2))
-        for c in result["candidates"]:
-            print(f"  {'KEEP' if c['adopted_so_far'] else 'roll back'}: {c['change']}  held-out {c['heldout']['catch_rate']:.2f} catch / {c['heldout']['false_block_rate']:.2f} false-block")
-        return 0
 
     if args.cmd == "bench":
         from .bench import load_cases, score
