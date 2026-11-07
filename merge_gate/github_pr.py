@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -144,10 +145,17 @@ def materialize(r: ResolvedPR, workdir: str | None = None, clone_url=default_clo
         left = deadline - time.monotonic()
         if left <= 0:
             raise subprocess.TimeoutExpired(args, timeout_s)
-        proc = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=left, env=env)
+        proc = subprocess.Popen(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace", env=env, start_new_session=True)
+        try:
+            _, err = proc.communicate(timeout=left)
+        except subprocess.TimeoutExpired:
+            # git's helpers (remote-https, index-pack) hold the pipes too: kill the whole group or communicate() hangs
+            os.killpg(proc.pid, signal.SIGKILL) if hasattr(os, "killpg") else proc.kill()
+            proc.communicate()
+            raise
         if proc.returncode:
-            raise GitHubError(f"git {args[0]} failed for {r.full_name}: {proc.stderr.strip()[-300:]}")
+            raise GitHubError(f"git {args[0]} failed for {r.full_name}: {err.strip()[-300:]}")
 
     try:
         # Checking out <base> prefetches every blob of the base tree in one request; blame's history blobs
@@ -168,7 +176,7 @@ def materialize(r: ResolvedPR, workdir: str | None = None, clone_url=default_clo
 
 
 def scan(query: str, use_llm: bool = False, use_subq: bool = False, on_stage=None,
-         workdir: str | None = None) -> tuple[VerdictReport, PullRequest, ResolvedPR]:
+         workdir: str | None = None, clone_timeout_s: int = CLONE_TIMEOUT_S) -> tuple[VerdictReport, PullRequest, ResolvedPR]:
     """resolve -> materialize -> verify, with the same flags the CLI passes to verify()."""
     from .verify import verify
 
@@ -176,7 +184,7 @@ def scan(query: str, use_llm: bool = False, use_subq: bool = False, on_stage=Non
     if on_stage:
         on_stage("clone", "start", {"url": resolved.html_url, "repo": resolved.full_name})
     t0 = time.monotonic()
-    pr = materialize(resolved, workdir)
+    pr = materialize(resolved, workdir, timeout_s=clone_timeout_s)
     if on_stage:
         on_stage("clone", "done", {"ms": int((time.monotonic() - t0) * 1000), "repo_path": pr.repo_path})
     return verify(pr, use_llm=use_llm, use_subq=use_subq, on_stage=on_stage), pr, resolved
