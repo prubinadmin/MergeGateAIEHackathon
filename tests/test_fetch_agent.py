@@ -30,6 +30,18 @@ def _report(verdict="BLOCK"):
     ('{"action": "approve", "pr_id": "demo-2"}', Command("approve", "demo-2")),  # card JSON can't approve either
     ("hello", Command("help")),
     ("", Command("help")),
+    # negation is never a block
+    ("don't block demo-1", Command("verify", "demo-1")),
+    ("don’t block demo-1", Command("verify", "demo-1")),
+    ("do not stop demo-2", Command("verify", "demo-2")),
+    ("not block demo-1, why does it fail?", Command("why", "demo-1")),
+    # a question beats an order
+    ("check demo-1 and block it if bad", Command("verify", "demo-1")),
+    ("why should I block demo-1", Command("why", "demo-1")),
+    ("block demo-1 in merge gate", Command("block", "demo-1", "in merge gate")),  # "gate" is the product name
+    ("show me demo-2", Command("verify", "demo-2")),
+    ("is demo-1 approved?", Command("verify", "demo-1")),
+    ("lgtm demo-1", Command("approve", "demo-1")),
 ])
 def test_parse_command(text, expected):
     assert parse_command(text) == expected
@@ -63,39 +75,63 @@ def _buttons(el):
 class FakeState:
     def __init__(self, fail=None):
         self.reports, self.calls, self.fail = {}, [], fail
+        self.prs = {f"demo-{i}": type("PR", (), {"pr_id": f"demo-{i}", "title": f"t{i}", "opened_by": "x"})()
+                    for i in (1, 2, 3)}
 
-    def verify(self, body):
-        self.calls.append(body)
+    def demo(self):
+        return list(self.prs.values())
+
+    def verify(self, body, *a, **kw):
+        self.calls.append((body, kw))
         if self.fail:
             raise self.fail
         self.reports[body["pr_id"]] = _report()
         return self.reports[body["pr_id"]]
 
 
-def _run(text, state):
+def _run(text, state, **kw):
     out = []
 
     async def send(t, card):
         out.append((t, card))
 
-    asyncio.run(handle(text, state, send))
+    asyncio.run(handle(text, state, send, **kw))
     return out
 
 
+SENDER = "agent1qexamplesenderaddress000000000000000000000000000000abcd"
+
+
 def test_verify_sends_running_then_verdict_card():
-    out = _run("verify demo-1", FakeState())
+    s = FakeState()
+    out = _run("verify demo-1", s)
     assert out[0][0].startswith("Running the gate on demo-1") and out[0][1] is None
     assert "BLOCK" in out[1][0] and out[1][1]["card_kind"] == "custom"
+    assert s.calls[0][1] == {"source": "asi-one"}  # chat runs are logged as asi-one, not api
 
 
-def test_block_only_records(monkeypatch):
+def test_chat_block_is_a_recorded_request_not_an_owner_block(monkeypatch):
     logged = []
     monkeypatch.setattr("agents.merge_gate_agent.store.log_reply", lambda *a: logged.append(a))
+    s = FakeState()  # no cached report: block must not run the gate
+    out = _run("block demo-1 no", s, sender=SENDER)
+    assert s.calls == [] and len(out) == 1
+    assert out[0][0] == ("Recorded a block request from agent1qexamp...abcd. Only the code owner's verified "
+                         "phone or GitHub approval changes the gate.")
+    assert logged == [("demo-1", SENDER, "chat_block_request", "BLOCK no", "block_request_recorded")]
+
+
+def test_block_of_unknown_pr_records_nothing(monkeypatch):
+    logged = []
+    monkeypatch.setattr("agents.merge_gate_agent.store.log_reply", lambda *a: logged.append(a))
+    out = _run("block demo-9", FakeState(), sender=SENDER)
+    assert logged == [] and "Unknown PR" in out[0][0]
+
+
+def test_why_without_a_verdict_does_not_run_the_gate():
     s = FakeState()
-    s.reports["demo-1"] = _report()
-    out = _run("block demo-1 no", s)
-    assert s.calls == [] and "Blocked demo-1" in out[-1][0] and "Nothing was approved" in out[-1][0]
-    assert logged == [("demo-1", "asi-one-chat", "BLOCK", "BLOCK no", "block_recorded")]
+    out = _run("why demo-2", s)
+    assert s.calls == [] and out == [("No verdict yet for demo-2 — say 'verify demo-2' first.", None)]
 
 
 def test_approve_is_refused_without_running_anything():
@@ -104,10 +140,62 @@ def test_approve_is_refused_without_running_anything():
     assert s.calls == [] and "never approve" in out[0][0]
 
 
-def test_errors_become_a_clear_reply():
-    assert "Unknown PR" in _run("verify demo-9", FakeState(fail=KeyError("demo-9")))[-1][0]
-    last = _run("why demo-1", FakeState(fail=RuntimeError("git exploded")))[-1][0]
-    assert "The gate failed: RuntimeError: git exploded" in last
+def test_errors_become_a_clear_reply(caplog):
+    s = FakeState()
+    assert "Unknown PR" in _run("verify demo-9", s)[-1][0] and s.calls == []
+    last = _run("verify demo-1", FakeState(fail=RuntimeError("git exploded")))[-1][0]
+    assert last == "The gate failed: RuntimeError: git exploded. Try again or 'list PRs'."
+    # a KeyError from inside the gate is a gate failure, not "Unknown PR"
+    assert "The gate failed: KeyError" in _run("verify demo-1", FakeState(fail=KeyError("base_ref")))[-1][0]
+    assert "gate failed" in caplog.text  # and it is logged
+
+
+def test_gate_runs_in_background_and_chat_stays_responsive():
+    """While a run is in flight, 'list PRs' and 'why' (cached) answer at once; the run's reply comes later."""
+    async def scenario():
+        s, out, release, jobs = FakeState(), [], asyncio.Event(), []
+        s.reports["demo-2"] = _report()
+
+        async def send(t, card):
+            out.append(t)
+
+        async def slow_run(pr_id):
+            await release.wait()
+            return _report(), []
+
+        await handle("verify demo-1", s, send, run=slow_run, background=lambda c: jobs.append(asyncio.create_task(c)))
+        assert out == ["Running the gate on demo-1: rules, code owners, sandbox..."]  # handler returned already
+        await asyncio.wait_for(handle("list PRs", s, send), 1)
+        await asyncio.wait_for(handle("why demo-2", s, send), 1)
+        assert out[1].startswith("Demo PRs:") and "R1_DELETED_TEST" in out[2] and len(out) == 3  # cached report
+        release.set()
+        await asyncio.wait_for(jobs[0], 1)
+        assert out[3].startswith("BLOCK: demo-1")
+
+    asyncio.run(scenario())
+
+
+def test_per_sender_spawner_serializes_one_sender_only():
+    from agents.merge_gate_agent import per_sender_spawner
+
+    async def scenario():
+        spawn, events = per_sender_spawner(), []
+        gate = asyncio.Event()
+
+        async def job(name, wait):
+            events.append(f"{name} start")
+            if wait:
+                await gate.wait()
+            events.append(f"{name} end")
+
+        a1, a2, b = spawn("A", job("a1", True)), spawn("A", job("a2", False)), spawn("B", job("b", False))
+        await asyncio.wait_for(b, 1)  # B is not held up by A's in-flight run
+        assert events == ["a1 start", "b start", "b end"]  # a2 waits for a1
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(a1, a2), 1)
+        assert events[3:] == ["a1 end", "a2 start", "a2 end"]
+
+    asyncio.run(scenario())
 
 
 def test_real_gate_on_demo_1_through_the_handler(tmp_path, monkeypatch):
@@ -138,18 +226,22 @@ def test_build_agents_orchestrator_plus_four_specialists():
 class FakeCtx:
     """Stands in for the orchestrator's Context: 'delivers' each StepRequest to the real specialist code."""
 
-    def __init__(self, dead=(), flaky=()):
-        self.dead, self.flaky, self.calls = set(dead), set(flaky), []
+    def __init__(self, dead=(), flaky=(), stale=()):
+        self.dead, self.flaky, self.stale, self.calls, self.timeouts = set(dead), set(flaky), set(stale), [], {}
 
     async def send_and_receive(self, dest, req, response_type, timeout):
         from agents.team import run_step
         from merge_gate.pr import PullRequest
 
         self.calls.append(req.step)
-        if req.step in self.dead or (req.step in self.flaky and self.calls.count(req.step) == 1):
+        self.timeouts[req.step] = timeout
+        if req.step in self.dead:
             return None, type("S", (), {"detail": "Timeout waiting for response"})()
+        if req.step in self.flaky and self.calls.count(req.step) == 1:
+            return response_type(step=req.step, ok=False, req_id=req.req_id, error="OSError: disk hiccup"), None
         out = run_step(req.step, PullRequest(**req.pr.model_dump()), req.source, req.timeout_s)
-        return response_type(step=req.step, ok=True, **out), None
+        rid = "an-earlier-request" if req.step in self.stale else req.req_id
+        return response_type(step=req.step, ok=True, req_id=rid, **out), None
 
 
 def _demo_state(tmp_path, monkeypatch):
@@ -164,22 +256,110 @@ def _demo_state(tmp_path, monkeypatch):
     return state
 
 
-def test_fan_out_retries_then_falls_back_in_process_and_says_so(tmp_path, monkeypatch):
+ADDRS = {s: f"agent1{s}" for s in ("rules", "owners", "tests", "sandbox")}
+
+
+def test_fan_out_retries_errors_but_not_timeouts(tmp_path, monkeypatch):
     pytest.importorskip("uagents")
     from agents.team import fan_out
 
     state = _demo_state(tmp_path, monkeypatch)
-    addrs = {s: f"agent1{s}" for s in ("rules", "owners", "tests", "sandbox")}
     ctx = FakeCtx(dead={"owners"}, flaky={"rules"})
-    steps, trace = asyncio.run(fan_out(ctx, addrs, state.prs["demo-1"], use_llm=False))
-    assert ctx.calls.count("rules") == 2 and ctx.calls.count("owners") == 2  # one retry each
+    steps, trace = asyncio.run(fan_out(ctx, ADDRS, state.prs["demo-1"], use_llm=False))
+    assert ctx.calls.count("rules") == 2  # explicit error result: one retry
+    assert ctx.calls.count("owners") == 1  # timeout: no retry (it would queue behind the busy specialist)
     assert "Rules agent: done" in trace[0] and "after a retry" in trace[0]
-    assert "OwnerRouter agent failed twice" in trace[1] and "in-process" in trace[1]
+    assert trace[1] == ("OwnerRouter agent failed (Timeout waiting for response); ran that step in-process instead")
     assert "skipped" in trace[2]
     report = state.verify({"pr_id": "demo-1", "llm": False}, None, steps)
     plain = state.verify({"pr_id": "demo-1", "llm": False})
     assert report.verdict == "BLOCK" and report.evidence[0].id.startswith("R1")
     assert report.run_hash == plain.run_hash  # same gate, same answer, whichever agent did the work
+
+
+def test_fan_out_ignores_a_stale_late_reply(tmp_path, monkeypatch):
+    pytest.importorskip("uagents")
+    from agents.team import fan_out
+
+    state = _demo_state(tmp_path, monkeypatch)
+    ctx = FakeCtx(stale={"owners"})
+    steps, trace = asyncio.run(fan_out(ctx, ADDRS, state.prs["demo-1"], use_llm=False))
+    assert ctx.calls.count("owners") == 1 and "stale reply" in trace[1] and "in-process" in trace[1]
+    assert [o.email for o in steps["owners"](None)]  # the in-process result, not the stale one
+
+
+def test_fan_out_step_exception_does_not_abandon_siblings(tmp_path, monkeypatch):
+    pytest.importorskip("uagents")
+    import agents.team as team
+
+    state = _demo_state(tmp_path, monkeypatch)
+    real, done = team.run_step, []
+
+    def run_step(step, *a):
+        if step == "owners":
+            raise RuntimeError("git blame exploded")
+        out = real(step, *a)
+        done.append(step)
+        return out
+
+    monkeypatch.setattr(team, "run_step", run_step)
+    with pytest.raises(RuntimeError, match="OwnerRouter step failed: RuntimeError: git blame exploded"):
+        asyncio.run(team.fan_out(FakeCtx(dead={"owners"}), ADDRS, state.prs["demo-1"], use_llm=False))
+    assert done == ["rules"]  # the sibling finished; the run then failed loudly instead of a silent PASS
+
+
+def test_fan_out_testwriter_exception_becomes_a_note(tmp_path, monkeypatch):
+    pytest.importorskip("uagents")
+    import agents.team as team
+
+    state = _demo_state(tmp_path, monkeypatch)
+    real = team.run_step
+    monkeypatch.setattr(team, "run_step", lambda step, *a: (_ for _ in ()).throw(ValueError("bad"))
+                        if step == "tests" else real(step, *a))
+    steps, trace = asyncio.run(team.fan_out(FakeCtx(dead={"tests"}), ADDRS, state.prs["demo-1"], use_llm=True))
+    assert "TestWriter/Sandbox step failed (ValueError: bad)" in trace[2]
+    assert steps["testgen"](None, 60).error == "generated tests unavailable: ValueError: bad"
+
+
+def test_step_timeouts_cover_the_llm_and_both_sandbox_runs():
+    import inspect
+
+    from agents.team import step_timeout
+    from merge_gate import llm
+
+    assert step_timeout("tests", 60) >= inspect.signature(llm.complete).parameters["timeout_s"].default
+    assert step_timeout("sandbox", 60) > 2 * 60 and step_timeout("sandbox", 90) > 2 * 90
+
+
+def test_agent_verdicts_are_logged_as_asi_one_with_fan_out_time(tmp_path, monkeypatch):
+    import time
+
+    from merge_gate import store
+
+    state = _demo_state(tmp_path, monkeypatch)
+    state.verify({"pr_id": "demo-1", "llm": False}, None, None, "asi-one", time.monotonic() - 5)
+    rec = store.read(kind="verdict")[-1]["data"]
+    assert rec["source"] == "asi-one" and rec["ms"] >= 5000
+
+
+def test_stats_do_not_count_chat_block_requests_as_owner_actions(tmp_path, monkeypatch):
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from merge_gate import store
+    from merge_gate.serve import make_handler
+
+    state = _demo_state(tmp_path, monkeypatch)
+    store.log_reply("demo-1", SENDER, "chat_block_request", "BLOCK", "block_request_recorded")
+    store.log_reply("demo-1", "+15550000000", "BLOCK", "BLOCK", "blocked")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        stats = json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_port}/api/stats"))
+    finally:
+        srv.shutdown()
+    assert stats["owner_blocks"] == 1 and stats["owner_replies"] == 1
 
 
 def test_fan_out_with_llm_chains_testwriter_into_sandbox(tmp_path, monkeypatch):

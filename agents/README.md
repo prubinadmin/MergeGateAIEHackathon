@@ -29,9 +29,13 @@ buttons.
   faces ASI:One. The specialists only answer the orchestrator's address. A request carries a repo path and
   test code to run, so requests from anyone else are refused.
 - The orchestrator fans out: Rules and OwnerRouter run in parallel with the TestWriter -> Sandbox chain.
-  Each call has a timeout (30 s; TestWriter 120 s; Sandbox 180 s) and one retry. If a specialist still
-  fails, the orchestrator runs that step in-process. The reply then says so, for example: "OwnerRouter agent
-  failed twice (Timeout waiting for response); ran that step in-process instead".
+  Each call has a timeout (30 s; TestWriter 200 s, above the LLM's 180 s; Sandbox 2 x the pytest timeout
+  + 30 s, since it runs pytest on base and on head). A specialist handles one message at a time, so a
+  timed-out step is not re-sent: the orchestrator runs it in-process at once and ignores the late reply
+  (each request carries a `req_id` the reply must echo). Only an explicit error result is retried, once.
+  The reply says when a step fell back, for example: "OwnerRouter agent failed (Timeout waiting for
+  response); ran that step in-process instead". If Rules or OwnerRouter fail even in-process, the run fails
+  with a clear error (never a silent PASS); a TestWriter/Sandbox failure becomes a note, as in `verify()`.
 - The verdict is never delegated. The specialists' results go into the same `merge_gate.verify()`
   (`decide()`, summary, `run_hash`) through its `steps=` hook. A run through the agents therefore has the
   same `run_hash` as an in-process run (tested).
@@ -57,15 +61,24 @@ Agents:
 - Sandbox agent: done in 659 ms
 ```
 
-Design rule: **a chat can stop a merge, never approve one.** `block` only records the block in the hash-chained
-run log (`runs/log.jsonl`). The agent has no approve path. It never sends an iMessage and never calls GitHub.
+Design rule: **a chat can never approve a merge, and a chat `block` is not an owner action.** Anyone can chat
+with a public agent, so `block` is recorded in the hash-chained run log (`runs/log.jsonl`) as a
+`chat_block_request` with the sender's agent address. It is not counted as an owner block or owner reply in
+`/api/stats`. Only the code owner's verified phone or GitHub approval changes the gate. The agent has no
+approve path. It never sends an iMessage and never calls GitHub.
+
+A gate run happens in a background task. The chat handler acknowledges, says "Running the gate on ...", and
+returns at once, so `list PRs` and `why` (for a PR that already has a verdict) answer instantly while a run is
+in flight. One sender's runs are serialized; other senders are not held up. The verdict is logged with
+`source: "asi-one"` and the wall-clock time of the whole fan-out.
 
 | You say | Agent does |
 | --- | --- |
 | `list PRs` | lists demo-1..3 (builds the throwaway multi-author demo repo on first use) |
 | `verify demo-1` | sends "Running the gate on demo-1..." right away, then verdict + evidence + owner + run_hash + card |
-| `why demo-1` | every piece of evidence + run_hash |
-| `block demo-1 deletes a test` | records an owner BLOCK in the run log |
+| `why demo-1` | every piece of evidence + run_hash (or "No verdict yet for demo-1 — say 'verify demo-1' first.") |
+| `block demo-1 deletes a test` | records a block request from your agent address; does not run the gate or change the verdict |
+| `don't block demo-1` | treated as a question (verify), never as a block |
 | `approve demo-1` | refuses: approval happens on GitHub with the owner's own login |
 | `verify PR #7 in owner/repo` | explains that real repos are gated by the GitHub Action (`templates/merge-gate.yml`) |
 
@@ -139,10 +152,13 @@ pytest tests/test_fetch_agent.py
 
 The tests cover:
 - command parsing, and reply and card formatting, with the gate mocked
-- error replies, and BLOCK only recording the block
+- negation ("don't block") and question-vs-order parsing
+- error replies, and a chat block being only a recorded request (no gate run, not an owner block)
+- background runs: "list PRs" / "why" answer while a run is in flight; one sender's runs are serialized
 - one in-process run of the real gate on demo-1, which must return BLOCK with R1
 - the five-agent build
-- fan-out with a flaky specialist (retry) and a dead one (in-process fallback, same `run_hash`)
+- fan-out with an erroring specialist (one retry), a timed-out one (no retry, in-process fallback, same
+  `run_hash`), a stale late reply, and a step that raises (siblings still finish)
 - the TestWriter -> Sandbox chain
 
 The tests that need `uagents` are skipped when it is not installed.

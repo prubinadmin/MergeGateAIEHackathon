@@ -9,14 +9,17 @@ TestWriter, Sandbox) over typed messages, then decides in plain code (merge_gate
 Interactive Card (MetadataContent) for verdicts.
 
 Commands: "list PRs", "verify demo-1", "why demo-1", "block demo-1 <note>", "help".
-Design rule (same as the iMessage loop): a chat can stop a merge, never approve one. BLOCK here only
-records the block in the run log. This agent never sends iMessages and never calls GitHub.
+Design rule: a chat can never approve a merge, and a chat BLOCK is not an owner action either: it is
+recorded as a "chat_block_request" with the sender's address. Only the code owner's verified phone or
+GitHub approval changes the gate. This agent never sends iMessages and never calls GitHub.
+A gate run happens in a background task, so "list PRs" / "why" answer instantly while one is in flight.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -27,23 +30,26 @@ from merge_gate import store
 from merge_gate.notify import handle_reply, parse_reply
 from merge_gate.schema import VerdictReport
 
+log = logging.getLogger("merge_gate.agent")
 Kind = Literal["list", "verify", "why", "block", "approve", "github", "help"]
 
 HELP = (
     "I run Merge Gate, which checks a PR and routes what it finds to the engineer who wrote the code.\n"
     "Try: \"list PRs\", \"verify demo-1\", \"why demo-1\", \"block demo-1 <reason>\".\n"
-    "A chat can stop a merge, never approve one."
+    "A chat can never approve a merge; \"block\" records a request for the code owner."
 )
 _PR = re.compile(r"\bdemo-\d+\b", re.I)
 _GITHUB = re.compile(r"\b[\w.-]+/[\w.-]+\b.*#\d+|#\d+.*\b[\w.-]+/[\w.-]+\b")
-# Checked in this order, so "why was demo-1 blocked" is WHY, not BLOCK.
+# Checked in this order: a question (WHY/VERIFY) beats BLOCK, so "why was demo-1 blocked" and
+# "check demo-1, block it if bad" never record a block. Not "gate": the product is called Merge Gate.
 _KEYWORDS: list[tuple[Kind, tuple[str, ...]]] = [
     ("why", ("why", "explain", "evidence")),
+    ("verify", ("verify", "check", "run", "scan", "approved")),  # "is demo-1 approved?" is a question
     ("block", ("block", "stop")),  # not "blocked": "is demo-1 blocked?" is a question, not an order
-    ("approve", ("approve", "approved", "lgtm")),  # not "merge": the product is called Merge Gate
-    ("verify", ("verify", "check", "run", "gate", "scan")),
+    ("approve", ("approve", "lgtm")),  # not "merge": the product is called Merge Gate
     ("list", ("list", "prs", "demos", "show")),
 ]
+_NEGATED_BLOCK = re.compile(r"\b(?:don'?t|do\s+not|not|never)\s+(?:block|stop)\b")
 
 
 @dataclass
@@ -66,16 +72,19 @@ def parse_command(text: str) -> Command:
             return Command(kind, str(sel.get("pr_id", "")).lower(), str(sel.get("note", "")))  # type: ignore[arg-type]
     m = _PR.search(text)
     pr_id = m.group(0).lower() if m else ""
-    words = re.findall(r"[a-z]+", text.lower())
+    low = text.lower().replace("’", "'")
+    words = set(re.findall(r"[a-z]+", low))
+    if _NEGATED_BLOCK.search(low):  # "don't block demo-1" must never record a block
+        words -= {"block", "stop"}
     if not pr_id and _GITHUB.search(text):
         return Command("github")
-    kind = next((k for k, keys in _KEYWORDS if any(w in keys for w in words)), None)
+    kind = next((k for k, keys in _KEYWORDS if words & set(keys)), None)
     if kind == "block":
         note = text[m.end():].strip(" :-.") if m else ""
         return Command("block", pr_id, note)
     if kind in ("why", "verify", "approve"):
         return Command(kind, pr_id)
-    if kind == "list":
+    if kind == "list" and not pr_id:  # "show me demo-2" acts on demo-2
         return Command("list")
     return Command("verify", pr_id) if pr_id else Command("help")
 
@@ -95,7 +104,7 @@ def format_verdict(r: VerdictReport, trace: list[str] | tuple = ()) -> str:
     if trace:
         lines += ["Agents:"] + [f"- {t}" for t in trace]
     if r.verdict != "PASS":
-        lines.append(f'Say "why {r.pr_id}" or "block {r.pr_id}". A chat can stop a merge, never approve one.')
+        lines.append(f'Say "why {r.pr_id}" or "block {r.pr_id}" (a request to the code owner). A chat can never approve a merge.')
     return "\n".join(lines)
 
 
@@ -137,16 +146,27 @@ Send = Callable[[str, "dict[str, str] | None"], Awaitable[None]]
 Run = Callable[[str], Awaitable["tuple[VerdictReport, list[str]]"]]
 
 
-async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run | None = None) -> None:
+def short_addr(address: str) -> str:
+    return f"{address[:12]}...{address[-4:]}" if len(address) > 20 else (address or "an unknown sender")
+
+
+async def _reply_failure(send: Send, e: Exception) -> None:
+    log.exception("gate failed")
+    await send(f"The gate failed: {type(e).__name__}: {str(e)[:200]}. Try again or 'list PRs'.", None)
+
+
+async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run | None = None,
+                 sender: str = "", background: Callable[[Awaitable[None]], None] | None = None) -> None:
     """One chat message -> one or more replies via send(text, card_metadata_or_None).
 
-    state is a merge_gate.serve.State (the same object behind the HTTP API). Gate calls block, so they
-    run in a worker thread; the agent stays responsive and the user sees "running" first.
+    state is a merge_gate.serve.State (the same object behind the HTTP API). A gate run sends "Running..."
+    at once; the run itself (and its final reply) is handed to background(coro) when given, so the caller's
+    message queue is free while it runs. Without background it is awaited here.
     """
     cmd = parse_command(text)
 
     async def in_process(pr_id: str):
-        return await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}), []
+        return await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}, source="asi-one"), []
 
     run = run or in_process
     try:
@@ -157,33 +177,65 @@ async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run |
                 "This agent runs the gate on the demo PRs (demo-1, demo-2, demo-3). To gate a real GitHub repo, "
                 "install the Action in templates/merge-gate.yml; it posts the same verdict as a required check.", None)
         if cmd.kind == "approve":
-            return await send("A chat can stop a merge, never approve one. Approve on GitHub with your own login.", None)
+            return await send("A chat can never approve a merge. Approve on GitHub with your own login.", None)
+        prs = await asyncio.to_thread(state.demo)
         if cmd.kind == "list":
-            prs = await asyncio.to_thread(state.demo)
             lines = [f"- {p.pr_id}: {p.title} (opened by {p.opened_by})" for p in prs]
             return await send("Demo PRs:\n" + "\n".join(lines) + '\nSay "verify demo-1".', None)
         if not cmd.pr_id:
             return await send(f'Which PR? e.g. "{cmd.kind} demo-1". Say "list PRs" to see them.', None)
-        report = state.reports.get(cmd.pr_id)
-        if cmd.kind == "verify" or report is None:
-            await send(f"Running the gate on {cmd.pr_id}: rules, code owners, sandbox...", None)
-            report, trace = await run(cmd.pr_id)
-            if cmd.kind == "verify":
-                return await send(format_verdict(report, trace), verdict_card(report))
+        if cmd.pr_id not in {p.pr_id for p in prs}:
+            return await send(f'Unknown PR "{cmd.pr_id}". Say "list PRs" to see the demo PRs.', None)
+        if cmd.kind == "block":  # a request, not an owner action: never touches the verdict, never runs the gate
+            raw = f"BLOCK {cmd.note}".strip()
+            await asyncio.to_thread(store.log_reply, cmd.pr_id, sender or "asi-one-chat", "chat_block_request", raw,
+                                    "block_request_recorded")
+            return await send(f"Recorded a block request from {short_addr(sender)}. Only the code owner's verified "
+                              "phone or GitHub approval changes the gate.", None)
         if cmd.kind == "why":
+            report = state.reports.get(cmd.pr_id)
+            if report is None:
+                return await send(f"No verdict yet for {cmd.pr_id} — say 'verify {cmd.pr_id}' first.", None)
             return await send(handle_reply(report, parse_reply("WHY")).text, None)
-        if cmd.kind == "block":
-            action = handle_reply(report, parse_reply(f"BLOCK {cmd.note}".strip()))
-            store.log_reply(report.pr_id, "asi-one-chat", "BLOCK", f"BLOCK {cmd.note}".strip(), "block_recorded")
-            return await send(f"{action.text} Recorded in the run log. Nothing was approved or merged.", None)
-    except KeyError:
-        await send(f'Unknown PR "{cmd.pr_id}". Say "list PRs" to see the demo PRs.', None)
+        await send(f"Running the gate on {cmd.pr_id}: rules, code owners, sandbox...", None)
     except Exception as e:  # noqa: BLE001 - the user gets the failure, not silence
-        await send(f"The gate failed: {type(e).__name__}: {str(e)[:200]}. Try again, or \"list PRs\".", None)
+        return await _reply_failure(send, e)
+
+    async def job() -> None:
+        try:
+            report, trace = await run(cmd.pr_id)
+            await send(format_verdict(report, trace), verdict_card(report))
+        except Exception as e:  # noqa: BLE001
+            await _reply_failure(send, e)
+
+    if background:
+        background(job())
+    else:
+        await job()
+
+
+def per_sender_spawner() -> Callable[[str, Awaitable[None]], asyncio.Task]:
+    """spawn(sender, coro): run coro as a task on the running loop. One sender's coros run one at a time, in
+    order; other senders are unaffected. Tasks are kept referenced until done, so none is garbage-collected."""
+    locks: dict[str, asyncio.Lock] = {}
+    tasks: set[asyncio.Task] = set()
+
+    def spawn(sender: str, coro: Awaitable[None]) -> asyncio.Task:
+        async def serialized() -> None:
+            async with locks.setdefault(sender, asyncio.Lock()):
+                await coro
+
+        task = asyncio.get_running_loop().create_task(serialized())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
+    return spawn
 
 
 def build_agents(seed: str, port: int = 8001, use_llm: bool = False) -> list:
     """[orchestrator, Rules, OwnerRouter, TestWriter, Sandbox]. Only the orchestrator faces ASI:One."""
+    import time
     from datetime import datetime, timezone
     from uuid import uuid4
 
@@ -202,6 +254,7 @@ def build_agents(seed: str, port: int = 8001, use_llm: bool = False) -> list:
     team = [specialist(step, seed, agent.address) for step in STEPS]
     addresses = {step: a.address for step, a in zip(STEPS, team)}
     proto = Protocol(spec=chat_protocol_spec)
+    in_background = per_sender_spawner()
 
     @proto.on_message(ChatMessage)
     async def on_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
@@ -215,13 +268,14 @@ def build_agents(seed: str, port: int = 8001, use_llm: bool = False) -> list:
             await ctx.send(sender, ChatMessage(timestamp=datetime.now(timezone.utc), msg_id=uuid4(), content=content))
 
         async def run(pr_id: str):
-            await asyncio.to_thread(state.demo)
-            pr = state.prs[pr_id]  # KeyError -> "Unknown PR"
-            steps, trace = await fan_out(ctx, addresses, pr, use_llm)
-            return await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}, None, steps), trace
+            t0 = time.monotonic()  # the logged ms covers the whole fan-out, not just decide()
+            steps, trace = await fan_out(ctx, addresses, state.prs[pr_id], use_llm)  # handle() checked pr_id
+            report = await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}, None, steps,
+                                             "asi-one", t0)
+            return report, trace
 
         ctx.logger.info(f"chat from {sender}: {text[:120]!r}")
-        await handle(text, state, send, use_llm, run)
+        await handle(text, state, send, use_llm, run, sender, lambda coro: in_background(sender, coro))
 
     @proto.on_message(ChatAcknowledgement)
     async def on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:
