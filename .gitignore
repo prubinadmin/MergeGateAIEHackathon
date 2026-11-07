@@ -25,3 +25,6 @@ benchmark/target_repo/
 runs/
 .cache/
 
+
+# npm lockfile (the team uses bun.lock)
+package-lock.json

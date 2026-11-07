@@ -52,11 +52,17 @@ To enforce on a repo: copy `templates/merge-gate.yml` to `.github/workflows/`, a
 secret, and make `merge-gate` a required status check. BLOCK -> failure, REVIEW -> pending,
 PASS -> success. Only a code owner's GitHub approval (`OWNER_GITHUB` variable) overrides a finding.
 
-### 3. Interactive Web UI & Simulator
+### 3. War Room UI (live, real gate) and the concept simulator
 ```bash
-npm install
-npm run dev
+python -m merge_gate serve           # terminal 1: the real gate's API on 127.0.0.1:8787
+bun install                          # or: npm install --legacy-peer-deps
+npm run dev                          # terminal 2: http://localhost:3000
 ```
+
+The War Room streams every real stage (`GET /api/run`, Server-Sent Events): rules, owner finder,
+Muse Spark tests + sandbox, `decide()`, the owner's message. The phone panel's BLOCK / WHY / OK /
+FALSE ALARM buttons call `/api/reply`. Nothing on that page is simulated. The older concept simulator
+is still available under its own tab (`#simulator`).
 
 ---
 
@@ -132,4 +138,4 @@ Everything in this repository was written on Nov 7, 2026, after 10:45, at the AI
 - iMessage contract with a console notifier (`merge_gate/notify.py`)
 - Benchmark case format and scoring (`benchmark/README.md`, `merge_gate/bench.py`)
 - Demo repo with three PRs; authors are simulated in commit metadata only (`merge_gate/demo.py`)
-- Web UI and phone simulator (`src/`, `index.html`)
+- War Room UI on the real API (`src/warroom/`) and the concept simulator (`src/`, `index.html`)

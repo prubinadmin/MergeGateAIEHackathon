@@ -52,37 +52,67 @@ def llm_summary(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], own
     return text[:400] if text else template_summary(pr, verdict, evidence)
 
 
-def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current") -> VerdictReport:
+def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None) -> VerdictReport:
     """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary.
 
     config: "current" = the adopted gate version in gate_versions/, None = raw rules (used by the learner).
+    on_stage(name, status, data): called as each real stage starts and finishes (the UI's live lanes).
     """
-    evidence: list[Evidence] = list(check_rules(pr))
-    notes: list[str] = []
+    import time
 
+    def emit(name: str, status: str, **data) -> None:
+        if on_stage:
+            on_stage(name, status, data)
+
+    def timed(name, fn):
+        emit(name, "start")
+        t0 = time.monotonic()
+        out = fn()
+        return out, int((time.monotonic() - t0) * 1000)
+
+    raw, ms = timed("rules", lambda: list(check_rules(pr)))
+    evidence: list[Evidence] = raw
+    emit("rules", "done", ms=ms, evidence=[e.__dict__ for e in raw])
+
+    from .owners import resolve_owners
+
+    owners, ms = timed("owners", lambda: resolve_owners(pr))
+    emit("owners", "done", ms=ms, owners=[o.__dict__ for o in owners])
+
+    notes: list[str] = []
     if use_llm:
         from .testgen import independent_check
 
-        tg = independent_check(pr, timeout_s)
-        evidence.extend(tg.evidence)
+        tg, ms = timed("testgen", lambda: independent_check(pr, timeout_s))
+        evidence = evidence + tg.evidence
         if tg.error:
             notes.append(tg.error)
         elif tg.dropped_invariants:
             notes.append(f"dropped {len(tg.dropped_invariants)} generated tests that failed on base")
+        emit(
+            "testgen", "done", ms=ms, error=tg.error, source=tg.source,
+            kept=tg.kept_invariants, dropped=tg.dropped_invariants,
+            base={"passed": tg.base.passed, "failed": len(tg.base.failed), "hash": tg.base.output_hash} if tg.base else None,
+            head={"passed": tg.head.passed, "failed": len(tg.head.failed), "hash": tg.head.output_hash} if tg.head else None,
+            evidence=[e.__dict__ for e in tg.evidence],
+        )
+    else:
+        emit("testgen", "skipped", reason="no MUSE_API_KEY or --no-llm")
 
     from .learn import apply_config, load_current
-    from .owners import resolve_owners
 
     cfg = load_current() if config == "current" else config
     evidence = apply_config(evidence, cfg)
     gate_version = cfg.version if cfg else GATE_VERSION
-    owners: list[Owner] = resolve_owners(pr)
     verdict = decide(evidence)
-    summary = (
-        llm_summary(pr, verdict, evidence, owners[0] if owners else None)
-        if use_llm
-        else template_summary(pr, verdict, evidence)
-    )
+    emit("decide", "done", ms=0, verdict=verdict, gate_version=gate_version)
+
+    if use_llm:
+        summary, ms = timed("summary", lambda: llm_summary(pr, verdict, evidence, owners[0] if owners else None))
+    else:
+        summary, ms = timed("summary", lambda: template_summary(pr, verdict, evidence))
+    emit("summary", "done", ms=ms, summary=summary)
+
     report = VerdictReport(
         pr_id=pr.pr_id,
         verdict=verdict,

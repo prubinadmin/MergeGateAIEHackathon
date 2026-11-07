@@ -8,6 +8,8 @@
   POST /api/reply    {"pr_id": "demo-1", "text": "BLOCK", "github": {"repo": "o/r", "number": 7}}
                                                          -> {"command", "action", "text", "github_blocked"}
   GET  /api/log                       run log records + whether the hash chain verifies
+  GET  /api/run?pr_id=demo-1&llm=1     Server-Sent Events: one event per real stage as it starts/finishes, then the report
+  GET  /api/stats                     counters for the header bar, from the run log
 
 Stdlib only. CORS is open so the Vite dev server can call it. Bind to localhost.
 """
@@ -16,7 +18,10 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
 import threading
+import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import store
@@ -45,7 +50,7 @@ class State:
                 self._demo_ready = True
         return [p for k, p in self.prs.items() if k.startswith("demo-")]
 
-    def verify(self, body: dict) -> VerdictReport:
+    def verify(self, body: dict, on_stage=None) -> VerdictReport:
         from .verify import verify
 
         if "repo_path" in body:
@@ -64,8 +69,9 @@ class State:
             if pr is None:
                 raise KeyError(f"unknown pr_id {body.get('pr_id')!r}")
         use_llm = body.get("llm", self.use_llm)
-        report = verify(pr, use_llm=bool(use_llm))
-        store.log_report(report, source="api")
+        t0 = time.monotonic()
+        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage)
+        store.log_report(report, source="api", ms=int((time.monotonic() - t0) * 1000), llm=bool(use_llm))
         with self.lock:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
@@ -104,8 +110,53 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.end_headers()
 
+        def _stream(self, pr_id: str, use_llm: bool) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            t0 = time.monotonic()
+
+            def send(obj: dict) -> None:
+                obj["t"] = round(time.monotonic() - t0, 2)
+                line = "data: " + json.dumps(obj, ensure_ascii=False, default=lambda o: o.__dict__) + "\n\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+
+            try:
+                send({"type": "begin", "pr_id": pr_id, "llm": use_llm})
+                report = state.verify({"pr_id": pr_id, "llm": use_llm},
+                                      on_stage=lambda name, status, data: send({"type": "stage", "stage": name, "status": status, **data}))
+                ok, _ = store.verify_chain()
+                send({"type": "report", "report": report.to_dict(), "chain_ok": ok})
+            except Exception as e:  # noqa: BLE001
+                send({"type": "error", "error": str(e)})
+
         def do_GET(self) -> None:
             try:
+                url = urllib.parse.urlparse(self.path)
+                q = dict(urllib.parse.parse_qsl(url.query))
+                if url.path == "/api/run":
+                    use = state.use_llm if "llm" not in q else q["llm"] in ("1", "true")
+                    return self._stream(q.get("pr_id", ""), use)
+                if url.path == "/api/stats":
+                    recs = store.read()
+                    verdicts = [r["data"] for r in recs if r["kind"] == "verdict"]
+                    ms = [v["ms"] for v in verdicts if isinstance(v.get("ms"), int)]
+                    ok, _ = store.verify_chain()
+                    return self._send(200, {
+                        "checked": len(verdicts),
+                        "blocked": sum(v["verdict"] == "BLOCK" for v in verdicts),
+                        "review": sum(v["verdict"] == "REVIEW" for v in verdicts),
+                        "passed": sum(v["verdict"] == "PASS" for v in verdicts),
+                        "owner_replies": sum(r["kind"] == "reply" for r in recs),
+                        "owner_blocks": sum(r["kind"] == "reply" and r["data"].get("command") == "BLOCK" for r in recs),
+                        "median_ms": int(statistics.median(ms)) if ms else None,
+                        "events": len(recs),
+                        "chain_ok": ok,
+                        "llm": state.use_llm,
+                    })
                 if self.path == "/api/health":
                     return self._send(200, {"ok": True, "llm": state.use_llm})
                 if self.path == "/api/demo":

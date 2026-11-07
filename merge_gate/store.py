@@ -47,8 +47,8 @@ def append(kind: str, data: dict, path: str | None = None) -> dict:
     return rec
 
 
-def log_report(report: VerdictReport, source: str = "cli", path: str | None = None) -> dict:
-    return append("verdict", {"source": source, **report.to_dict()}, path)
+def log_report(report: VerdictReport, source: str = "cli", path: str | None = None, **extra) -> dict:
+    return append("verdict", {"source": source, **report.to_dict(), **extra}, path)
 
 
 def log_reply(pr_id: str, owner: str, command: str, raw: str, action: str, path: str | None = None) -> dict:
