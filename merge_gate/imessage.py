@@ -59,7 +59,9 @@ class SendblueNotifier:
         req = urllib.request.Request(
             SEND_URL,
             data=json.dumps(body).encode("utf-8"),
-            headers={"sb-api-key-id": self.key, "sb-api-secret-key": self.secret, "Content-Type": "application/json"},
+            # explicit User-Agent: Cloudflare in front of Sendblue rejects Python-urllib's default (403, code 1010)
+            headers={"sb-api-key-id": self.key, "sb-api-secret-key": self.secret, "Content-Type": "application/json",
+                     "User-Agent": "merge-gate/0.1"},
             method="POST",
         )
         try:
