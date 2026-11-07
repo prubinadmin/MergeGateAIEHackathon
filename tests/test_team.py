@@ -86,12 +86,21 @@ def test_fan_out_ignores_a_stale_late_reply(tmp_path, monkeypatch):
 
 def test_fan_out_step_exception_does_not_abandon_siblings(tmp_path, monkeypatch):
     pytest.importorskip("uagents")
-    import merge_gate.owners as owners
+    import subprocess
+
+    import merge_gate.pr as prmod
     from agents.team import fan_out
 
     state = _demo_state(tmp_path, monkeypatch)
-    # OwnerRouter times out, so the step runs in-process, where git blame blows up
-    monkeypatch.setattr(owners, "resolve_owners", _raiser(RuntimeError("git blame exploded")))
+    # OwnerRouter times out, so the step runs in-process, where git blame blows up (fail the git boundary, not our code)
+    real_run = subprocess.run
+
+    def git_blame_explodes(args, *a, **kw):
+        if "blame" in args:
+            raise RuntimeError("git blame exploded")
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(prmod.subprocess, "run", git_blame_explodes)
     ctx = FakeCtx(dead={"owners"})
     with pytest.raises(RuntimeError, match="OwnerRouter step failed: RuntimeError: git blame exploded"):
         asyncio.run(fan_out(ctx, ADDRS, state.prs["demo-1"], use_llm=False))
@@ -100,12 +109,12 @@ def test_fan_out_step_exception_does_not_abandon_siblings(tmp_path, monkeypatch)
 
 def test_fan_out_testwriter_exception_becomes_a_note(tmp_path, monkeypatch):
     pytest.importorskip("uagents")
-    import merge_gate.testgen as tg
+    import merge_gate.llm as llm
     from agents.team import fan_out
 
     state = _demo_state(tmp_path, monkeypatch)
-    # TestWriter times out, so it runs in-process; a RuntimeError is not one of the LLM errors run_step turns into a note
-    monkeypatch.setattr(tg, "generate_tests", _raiser(RuntimeError("bad")))
+    # TestWriter times out, so it runs in-process; the model call itself blows up with a non-LLMError
+    monkeypatch.setattr(llm, "complete", _raiser(RuntimeError("bad")))
     steps, trace = asyncio.run(fan_out(FakeCtx(dead={"tests"}), ADDRS, state.prs["demo-1"], use_llm=True))
     assert "TestWriter/Sandbox step failed (RuntimeError: bad)" in trace[2]
     assert steps["testgen"](None, 60).error == "generated tests unavailable: RuntimeError: bad"

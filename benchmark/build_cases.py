@@ -1525,13 +1525,17 @@ def build_repo(repo: str) -> list[dict]:
     return cases
 
 
-def write_cases(cases: list[dict], cases_dir: str) -> None:
-    """Write every case dir; remove stale generated dirs (prNN_* under cases_dir) that are not in this set."""
-    keep = {f"{c['pr_id']}_{c['label']['kind']}" for c in cases}
+def _remove_stale_case_dirs(cases_dir: str, keep: set[str]) -> None:
+    """Remove generated prNN_* dirs under cases_dir that are not in `keep` (never anything else)."""
     existing = os.listdir(cases_dir) if os.path.isdir(cases_dir) else []
     for name in existing:
         if re.match(r"^pr\d\d_", name) and name not in keep and os.path.isdir(os.path.join(cases_dir, name)):
             shutil.rmtree(os.path.join(cases_dir, name))
+
+
+def write_cases(cases: list[dict], cases_dir: str) -> None:
+    """Write every case dir; remove stale generated dirs (prNN_* under cases_dir) that are not in this set."""
+    _remove_stale_case_dirs(cases_dir, {f"{c['pr_id']}_{c['label']['kind']}" for c in cases})
     for c in cases:
         d = os.path.join(cases_dir, f"{c['pr_id']}_{c['label']['kind']}")
         os.makedirs(d, exist_ok=True)
