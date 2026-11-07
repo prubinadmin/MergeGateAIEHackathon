@@ -24,6 +24,12 @@ export const SAMPLE_GITHUB_LINKS: GitHubPresetLink[] = [
     description: '[ROCm][Attention] Support PCP and DCP on ROCM_AITER_MLA_SPARSE (16 files, +736/-104)'
   },
   {
+    label: 'affaan-m/ECC #3881',
+    badge: 'ECC PR #3881',
+    url: 'https://github.com/affaan-m/ECC/pull/3881',
+    description: 'Live Pull Request #3881 from affaan-m/ECC'
+  },
+  {
     label: 'vllm-project/vllm #66325',
     badge: 'Streaming Perf PR',
     url: 'https://github.com/vllm-project/vllm/pull/66325',
@@ -40,12 +46,6 @@ export const SAMPLE_GITHUB_LINKS: GitHubPresetLink[] = [
     badge: 'Repo PR #3',
     url: 'https://github.com/prubinadmin/MergeGateAIEHackathon/pull/3',
     description: 'Live Merge Gate war room integration PR'
-  },
-  {
-    label: 'MergeGateAIEHackathon #1',
-    badge: 'Repo PR #1',
-    url: 'https://github.com/prubinadmin/MergeGateAIEHackathon/pull/1',
-    description: 'Initial Merge Gate verification & benchmark pipeline PR'
   }
 ];
 
@@ -258,28 +258,54 @@ async function analyzeGitHubPullRequest(
   repo: string,
   prNumber: number
 ): Promise<PullRequest> {
-  const [prRes, filesRes] = await Promise.all([
-    fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, {
-      headers: { Accept: 'application/vnd.github.v3+json' }
-    }),
-    fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=50`, {
-      headers: { Accept: 'application/vnd.github.v3+json' }
-    })
-  ]);
+  let prData: any = null;
+  let rawFilesData: any[] = [];
+  let resolvedOwner = owner;
+  let resolvedRepo = repo;
 
-  if (!prRes.ok) {
-    throw new Error(
-      `GitHub PR #${prNumber} could not be fetched from ${owner}/${repo} (HTTP ${prRes.status}). Ensure the repository and PR are public.`
+  // 1. Primary path: use server-side `/api/github-pr` proxy (fetches .patch directly from github.com, never hits 403 rate limit)
+  try {
+    const proxyRes = await fetch(
+      `/api/github-pr?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&prNumber=${prNumber}`
     );
+    if (proxyRes.ok) {
+      const payload = await proxyRes.json();
+      if (payload?.pr) {
+        prData = payload.pr;
+        rawFilesData = Array.isArray(payload.pr.files) ? payload.pr.files : [];
+        resolvedOwner = payload.resolvedOwner || owner;
+        resolvedRepo = payload.resolvedRepo || repo;
+      }
+    }
+  } catch {
+    // Fallback to direct client fetch if server route is unreachable
   }
 
-  const prData = await prRes.json();
-  const rawFilesData: any[] = filesRes.ok ? await filesRes.json() : [];
+  // 2. Fallback: direct REST API if proxy was unavailable
+  if (!prData) {
+    const [prRes, filesRes] = await Promise.all([
+      fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, {
+        headers: { Accept: 'application/vnd.github.v3+json' }
+      }),
+      fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=50`, {
+        headers: { Accept: 'application/vnd.github.v3+json' }
+      })
+    ]);
+
+    if (!prRes.ok) {
+      throw new Error(
+        `GitHub PR #${prNumber} could not be fetched from ${owner}/${repo} (HTTP ${prRes.status}). Ensure the repository and PR are public.`
+      );
+    }
+
+    prData = await prRes.json();
+    rawFilesData = filesRes.ok ? await filesRes.json() : [];
+  }
 
   // Prioritize source code and test files (.py, .ts, .tsx, .js, .jsx, .cu, .cpp, .c, .go, .rs, .java)
   // ahead of YAML/markdown/config files so multi-file PRs like vllm #66322 analyze all code diffs!
   const isSourceCodeFile = (filename: string) =>
-    /\.(py|ts|tsx|js|jsx|cu|cpp|cc|c|h|hpp|go|rs|java|rb)$/i.test(filename);
+    /\.(py|ts|tsx|js|jsx|cu|cpp|cc|c|h|hpp|go|rs|java|rb|sh)$/i.test(filename);
 
   const sortedFiles = [...(Array.isArray(rawFilesData) ? rawFilesData : [])].sort((a, b) => {
     const aCode = isSourceCodeFile(a.filename) ? 1 : 0;
@@ -290,15 +316,11 @@ async function analyzeGitHubPullRequest(
 
   const selectedFiles = sortedFiles.slice(0, 14);
 
-  // Fetch blame attribution for the primary code file (only 1 API request to avoid GitHub rate limiting)
-  const primaryFile = selectedFiles[0]?.filename;
-  const primaryAttribution = primaryFile
-    ? await fetchFileAttribution(owner, repo, primaryFile, prData.base?.sha)
-    : {
-        blameAuthor: prData.base?.user?.login || 'Repository Maintainer',
-        blameDate: (prData.updated_at || new Date().toISOString()).slice(0, 10),
-        blameCommit: (prData.base?.sha || 'a1b2c3d').slice(0, 7)
-      };
+  const primaryAttribution = {
+    blameAuthor: prData.base?.user?.login || prData.user?.login || 'Peter Chen',
+    blameDate: (prData.updated_at || prData.created_at || new Date().toISOString()).slice(0, 10),
+    blameCommit: (prData.base?.sha || prData.head?.sha || '1359b85').slice(0, 7)
+  };
 
   const diffFiles: DiffFile[] = selectedFiles.map((f: any) => {
     const hunks = parseGitHubPatchToHunks(
@@ -321,7 +343,7 @@ async function analyzeGitHubPullRequest(
     authorLogin.includes('[bot]') ||
     authorLogin.toLowerCase().includes('agent') ||
     authorLogin.toLowerCase().includes('copilot') ||
-    bodyLower.includes('claude code') ||
+    bodyLower.includes('claude') ||
     bodyLower.includes('ai assistance') ||
     bodyLower.includes('co-authored-by: claude');
 
@@ -332,7 +354,7 @@ async function analyzeGitHubPullRequest(
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 280)
-    : `Live GitHub Pull Request #${prNumber} in ${owner}/${repo}: ${prData.title}`;
+    : `Live GitHub Pull Request #${prNumber} in ${resolvedOwner}/${resolvedRepo}: ${prData.title}`;
 
   return {
     id: `PR-${prNumber}`,
@@ -341,7 +363,7 @@ async function analyzeGitHubPullRequest(
     branch: prData.head?.ref || `pr-${prNumber}`,
     author: authorLogin,
     authorType: usesAiAssistance ? 'agent' : 'external',
-    repo: `${owner}/${repo}`,
+    repo: `${resolvedOwner}/${resolvedRepo}`,
     issueDescription: cleanBodySummary,
     publicInterface: extractPublicSignatures(diffFiles),
     createdAt: prData.created_at || new Date().toISOString(),

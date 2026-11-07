@@ -9,6 +9,7 @@
 
   body {
     font-family: var(--font-sans);
+    background-color: #000000;
   }
 
   code, pre, kbd {
@@ -25,9 +26,9 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.25);
+  background: rgba(250, 204, 21, 0.25);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.45);
+  background: rgba(250, 204, 21, 0.45);
 }
