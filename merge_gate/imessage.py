@@ -9,7 +9,8 @@ Env (secrets/.env, never committed):
 
 Security, in the spirit of "easy to stop, hard to approve":
   - the webhook fails closed: no SENDBLUE_WEBHOOK_SECRET configured -> every call is rejected
-  - a reply only acts if it comes from the verified phone of the PR's top owner; anyone else is ignored
+  - a reply only acts if it comes from the verified phone of an authorized owner (the blame-top owner, or
+    SubQ's routed owner when eligible); anyone else is ignored
   - nothing here can approve or merge; OK only answers with the GitHub link (see notify.handle_reply)
 Without Sendblue keys the ConsoleNotifier is used, so the demo still runs end to end.
 """
@@ -24,7 +25,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from .notify import Action, ConsoleNotifier, Notifier, Reply, handle_reply, parse_reply
+from .notify import Action, ConsoleNotifier, Notifier, Reply, authorized_owners, handle_reply, parse_reply
 from .schema import VerdictReport
 
 SEND_URL = "https://api.sendblue.com/api/send-message"
@@ -105,10 +106,9 @@ def parse_inbound(payload: dict) -> Inbound | None:
 
 
 def handle_inbound(inbound: Inbound, report: VerdictReport, pr_url: str = "") -> tuple[Action, Reply, bool]:
-    """(action, reply, authorized). Only the PR's top owner, from their verified number, can act."""
+    """(action, reply, authorized). Only an authorized owner (notify.authorized_owners), from their verified number, can act."""
     reply = parse_reply(inbound.text)
-    owner = report.owners[0] if report.owners else None
-    expected = phone_for(owner.email) if owner else None
-    if not expected or phone_key(expected) != phone_key(inbound.phone):
+    allowed = {k for k in (phone_key(phone_for(o.email) or "") for o in authorized_owners(report)) if k}
+    if phone_key(inbound.phone) not in allowed:
         return Action("none"), reply, False
     return handle_reply(report, reply, pr_url), reply, True

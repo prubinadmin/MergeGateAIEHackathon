@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .pr import PullRequest
 from .rules import check_rules
-from .schema import Evidence, Owner, Verdict, VerdictReport, run_hash
+from .schema import Evidence, Owner, Verdict, VerdictReport, owner_key, run_hash
 
 GATE_VERSION = "v1"
 
@@ -52,8 +52,12 @@ def llm_summary(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], own
     return text[:400] if text else template_summary(pr, verdict, evidence)
 
 
-def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None) -> VerdictReport:
+def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None,
+           use_subq: bool = False) -> VerdictReport:
     """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary. Owners' stored rules always run.
+
+    use_subq=True lets SubQ Snap pick owners[0] among eligible owners and the urgency, when SUBQ_API_KEY is set
+    (independent of use_llm). It only routes; decide() stays code.
 
     config: "current" = the adopted gate version in gate_versions/, None = raw rules (used by the learner).
     on_stage(name, status, data): called as each real stage starts and finishes (the UI's live lanes).
@@ -114,6 +118,17 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
     verdict = decide(evidence)
     emit("decide", "done", ms=0, verdict=verdict, gate_version=gate_version)
 
+    blame_owner = owner_key(owners[0]) if owners else ""
+    routing: dict = {}
+    from . import subq
+
+    if use_subq and subq.has_key():
+        (owners, routing), ms = timed("routing", lambda: subq.route(pr, owners, evidence, verdict))
+        emit("routing", "done", ms=ms, to=owners[0].__dict__ if owners else None,
+             **{"routed_by": "blame", "route_confidence": None, "urgency_p": None, **routing})
+    else:
+        emit("routing", "skipped", reason="no SUBQ_API_KEY or --no-subq")
+
     if use_llm:
         summary, ms = timed("summary", lambda: llm_summary(pr, verdict, evidence, owners[0] if owners else None))
     else:
@@ -127,6 +142,9 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
         owners=owners,
         summary=summary + (f" [{'; '.join(notes)}]" if notes else ""),
         gate_version=gate_version,
+        blame_owner=blame_owner,
+        opened_by=pr.opened_by,
+        **routing,
     )
     report.run_hash = run_hash(
         {
@@ -135,6 +153,7 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
             "evidence": [e.__dict__ for e in evidence],
             "owners": [o.email for o in owners],
             "gate": gate_version,
+            "routing": [report.routed_by, report.route_confidence, report.urgency],
         }
     )
     return report
