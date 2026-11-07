@@ -8,12 +8,15 @@ The test is kept only if it PASSES on the base ref: a rule that doesn't hold on 
 not knowledge. Whether it FAILS on the PR head is recorded. Accepted tests live in the gate's data dir
 (owner_tests/<owner-local-part>/test_<slug>.py + owner_tests/registry.json), never in the target repo,
 and from then on verify() runs them on every PR that touches the same files. Running a stored test needs
-no model call; only creating one does.
+no model call; only creating one does. Generated code only ever runs through sandbox.run_tests (a temp
+`git archive` copy, scrubbed env, subprocess with a timeout), never in-process, and a stored file runs
+only if its sha256 still matches the one recorded when it was validated.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -57,10 +60,11 @@ class OwnerTest:
     fails_head: bool = False
     created_at: str = ""
     run_hash: str = ""
+    sha256: str = ""  # of the validated code; a stored file that no longer matches is never run
 
     def entry(self) -> dict:
         """The registry record."""
-        keys = ("owner", "sentence", "pr_id", "created_at", "file", "files", "test_name", "passes_base", "fails_head", "run_hash")
+        keys = ("owner", "sentence", "pr_id", "created_at", "file", "files", "test_name", "passes_base", "fails_head", "run_hash", "sha256")
         d = asdict(self)
         return {k: d[k] for k in keys}
 
@@ -130,13 +134,19 @@ def rule_to_test(pr: PullRequest, owner: str, sentence: str, timeout_s: int = 60
     t.run_hash = run_hash({"sentence": t.sentence, "source": code, "base": base.output_hash, "head": head.output_hash})
     root = _dir(dir_)
     os.makedirs(os.path.join(root, owner_key(owner)), exist_ok=True)
-    with open(os.path.join(root, t.file), "w", encoding="utf-8") as f:
-        f.write(f"# Taught by {owner}: {t.sentence}\n{code}")
+    t.sha256 = _sha(code)
+    # exactly the validated bytes: free text (owner, sentence) never goes into source, only into registry.json
+    with open(os.path.join(root, t.file), "w", encoding="utf-8", newline="") as f:
+        f.write(code)
     registry = [e for e in load_registry(root) if e["file"] != t.file] + [t.entry()]
     with open(os.path.join(root, "registry.json"), "w", encoding="utf-8") as f:
         json.dump(registry, f, indent=2, ensure_ascii=False)
     _log(t)
     return t
+
+
+def _sha(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 def _log(t: OwnerTest) -> None:
@@ -165,8 +175,12 @@ def check_owner_tests(pr: PullRequest, timeout_s: int = 60, dir_: str | None = N
         if not os.path.exists(path):
             continue
         name = f"test_owner_{owner_key(e['owner'])}_{os.path.basename(e['file'])[5:]}"
-        with open(path, encoding="utf-8") as f:
-            sources[name] = f.read()
+        with open(path, encoding="utf-8", newline="") as f:
+            src = f.read()
+        if not e.get("sha256") or _sha(src) != e["sha256"]:
+            store.append("owner_test_skipped", {"file": e["file"], "reason": "file does not match the validated sha256"})
+            continue
+        sources[name] = src
         tests[name] = e
     if not tests:
         return []

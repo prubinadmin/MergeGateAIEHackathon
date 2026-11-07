@@ -1,5 +1,6 @@
 """Owner replies become tests. The model is replaced by fixed text: no network, no real iMessage."""
 
+import hashlib
 import json
 import threading
 import time
@@ -126,13 +127,39 @@ def test_verify_turns_a_stored_owner_test_into_block_evidence(demo, monkeypatch)
     assert apply_config([ev], cfg)[0].severity == "block"
 
 
+def test_free_text_is_never_written_into_test_source(demo, monkeypatch):
+    model(monkeypatch, GOOD)
+    evil = SENTENCE + "\nimport os; os.system('x')\r\u2028os.system('y')"
+    t = owner_tests.rule_to_test(demo["demo-1"], "peter@example.com\nimport os", evil)
+    assert t.accepted
+    stored = open(f"owner_tests/{t.file}", newline="").read()
+    assert stored == t.source and "os.system" not in stored and "import os" not in stored and "Taught" not in stored
+    [entry] = owner_tests.load_registry()
+    assert entry["sentence"] == evil.strip()  # the sentence lives only in the registry
+    assert entry["sha256"] == hashlib.sha256(stored.encode()).hexdigest()
+
+
+def test_tampered_stored_test_is_skipped_and_logged(demo, monkeypatch):
+    model(monkeypatch, GOOD)
+    t = owner_tests.rule_to_test(demo["demo-1"], PETER, SENTENCE)
+    assert owner_tests.check_owner_tests(demo["demo-1"])  # untouched: block evidence
+    with open(f"owner_tests/{t.file}", "a", encoding="utf-8") as f:
+        f.write("\nimport os\nos.system('touch pwned')\n")
+    assert owner_tests.check_owner_tests(demo["demo-1"]) == []
+    assert store.read(kind="owner_test_skipped")[0]["data"]["file"] == t.file
+
+
 def _post(port, path, body):
+    import urllib.error
     import urllib.request
 
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return {"status": e.code, **json.loads(e.read())}
 
 
 def test_reply_and_webhook_teach_end_to_end(demo, monkeypatch):
@@ -141,16 +168,19 @@ def test_reply_and_webhook_teach_end_to_end(demo, monkeypatch):
     secret = "s" * 24
     monkeypatch.setenv("SENDBLUE_WEBHOOK_SECRET", secret)
     monkeypatch.setenv("OWNER_PHONES", json.dumps({PETER: "+15550100001"}))
-    model(monkeypatch, GOOD)
+    calls = model(monkeypatch, GOOD)
     state = serve.State(use_llm=False)
     state.notifier = imessage.ConsoleNotifier()  # never a real iMessage
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.make_handler(state))
     port = httpd.server_address[1]
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
+        # unauthenticated HTTP can never teach: no model call, nothing stored
+        calls_before = len(calls)
         out = _post(port, "/api/reply", {"pr_id": "demo-1", "text": SENTENCE})
-        assert out["command"] == "TEACH" and out["action"] == "teach"
-        assert out["text"] == "Learned: test_discount_over_100_is_free. It fails on demo-1, so demo-1 stays blocked."
+        assert out == {"status": 403, "error": "teach requires a verified owner (reply by iMessage)"}
+        assert len(calls) == calls_before and owner_tests.load_registry() == []
+        assert _post(port, "/api/reply", {"pr_id": "demo-1", "text": "WHY"})["action"] == "send_text"
 
         hook = f"/api/sendblue?token={secret}"
         state.threads[imessage.phone_key("+15559999999")] = {"pr_id": "demo-1", "pr_url": "", "github": {}}
@@ -166,5 +196,6 @@ def test_reply_and_webhook_teach_end_to_end(demo, monkeypatch):
         assert [t for _, t in state.notifier.sent] == [
             "Got it — turning that into a test…",
             "Learned: test_discount_over_100_is_free. It fails on demo-1, so demo-1 stays blocked."]
+        assert len(owner_tests.load_registry()) == 1  # the verified phone did teach
     finally:
         httpd.shutdown()

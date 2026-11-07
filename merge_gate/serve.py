@@ -7,7 +7,7 @@
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
   POST /api/reply    {"pr_id": "demo-1", "text": "BLOCK", "github": {"repo": "o/r", "number": 7}}
                                                          -> {"command", "action", "text", "github_blocked"}
-       free text (not a command) teaches the gate a rule (owner_tests.py); "text" is then the outcome
+       free text (a rule to teach) -> 403: teaching only via the verified-phone webhook below
   POST /api/message  {..., "send": true, "github": {...}}  -> also sends the iMessage via Sendblue (or console)
   POST /api/sendblue?token=SECRET     Sendblue inbound webhook; only the PR owner's verified phone can act
   GET  /api/log                       run log records + whether the hash chain verifies
@@ -276,6 +276,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     r = state.report(body["pr_id"])
                     reply = parse_reply(body.get("text", ""))
                     action = handle_reply(r, reply, body.get("pr_url", ""))
+                    if action.kind == "teach":  # runs model-written code: only the verified phone (/api/sendblue) may
+                        return self._send(403, {"error": "teach requires a verified owner (reply by iMessage)"})
                     owner = r.owners[0].name if r.owners else "owner"
                     blocked = False
                     gh = body.get("github") or {}
@@ -284,9 +286,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
                         github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
                         blocked = True
-                    text = state.teach(r, reply.note) if action.kind == "teach" else action.text
                     store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
-                    return self._send(200, {"command": reply.command, "action": action.kind, "text": text, "github_blocked": blocked})
+                    return self._send(200, {"command": reply.command, "action": action.kind, "text": action.text, "github_blocked": blocked})
                 return self._send(404, {"error": "not found"})
             except KeyError as e:
                 return self._send(400, {"error": str(e)})
