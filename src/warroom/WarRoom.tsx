@@ -4,7 +4,7 @@ import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
   API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, scanGithub, subscribeMode,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -146,6 +146,7 @@ export default function WarRoom() {
   const [showDiff, setShowDiff] = useState(false);
   const [showWhy, setShowWhy] = useState(true);
   const [replyBusy, setReplyBusy] = useState(false);
+  const [gh, setGh] = useState({ query: '', busy: false, note: '' });
   const [paging, setPaging] = useState<Record<string, { status: 'sending' | 'sent' | 'error'; note: string }>>({});
 
   const cancelRun = useRef<(() => void) | null>(null);
@@ -230,6 +231,22 @@ export default function WarRoom() {
     }
   };
 
+  // agentic: scan a live public GitHub PR, register it, then run the gate on it without another click
+  const scan = async () => {
+    const q = gh.query.trim();
+    if (!q || gh.busy || running) return;
+    setGh((g) => ({ ...g, busy: true, note: `Finding and cloning ${q}… (big repos take a few minutes)` }));
+    try {
+      const d = await scanGithub(q);
+      setPrs((all) => [...all.filter((p) => p.pr_id !== d.pr_id), d]);
+      setGh({ query: '', busy: false, note: `Scanning ${d.repo}#${d.number}: ${d.title}` });
+      setSel(d.pr_id);
+      run(d.pr_id);
+    } catch (e) {
+      setGh((g) => ({ ...g, busy: false, note: (e as Error).message }));
+    }
+  };
+
   const pr = prs.find((p) => p.pr_id === sel);
   const c = cases[sel] || EMPTY;
   const r = c.report;
@@ -277,6 +294,17 @@ export default function WarRoom() {
               </button>
             );
           })}
+          <form onSubmit={(e) => { e.preventDefault(); scan(); }} className="flex items-center gap-2">
+            <input value={gh.query} onChange={(e) => setGh((g) => ({ ...g, query: e.target.value }))} disabled={recorded || gh.busy}
+              placeholder="Scan a live GitHub PR: requests · owner/repo · owner/repo#42 · PR URL"
+              aria-label="Scan a live GitHub pull request"
+              className="w-[340px] rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-[12.5px] text-zinc-100 placeholder:text-zinc-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:opacity-40" />
+            <button type="submit" disabled={recorded || gh.busy || !gh.query.trim() || !!running}
+              className="flex items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-[12.5px] font-semibold text-amber-200 transition-colors duration-150 hover:bg-amber-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-35">
+              {gh.busy ? <Loader2 size={13} className="animate-spin" /> : <GitPullRequest size={13} />} Scan
+            </button>
+            {gh.note && <span role="status" className="max-w-[320px] truncate text-[11.5px] text-zinc-400" title={gh.note}>{gh.note}</span>}
+          </form>
           <div className="ml-auto flex items-center gap-4">
             <label title={recorded ? 'Recorded with Muse Spark on' : undefined} className="flex items-center gap-2 text-[12px] text-zinc-400 font-mono">
               <input type="checkbox" checked={useLlm} disabled={!llm || recorded} onChange={(e) => setUseLlm(e.target.checked)} className="accent-amber-500" />
