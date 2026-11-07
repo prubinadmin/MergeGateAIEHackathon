@@ -44,6 +44,11 @@ def load_dotenv(*paths: str) -> None:
                     os.environ[key] = value
 
 
+def has_key() -> bool:
+    load_dotenv()
+    return bool(os.environ.get("MUSE_API_KEY"))
+
+
 def _config() -> tuple[str, str, str]:
     load_dotenv()
     key = os.environ.get("MUSE_API_KEY", "")

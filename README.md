@@ -19,8 +19,8 @@ pytest
 
 Run the three demo scenarios (builds a throwaway multi-author repo):
 ```bash
-python -m merge_gate demo          # rules + ownership only, no API
-python -m merge_gate demo --llm    # adds Muse Spark tests and summaries (needs MUSE_API_KEY in .env.local)
+python -m merge_gate demo          # Muse Spark ON if MUSE_API_KEY is in .env.local, else rules + ownership only
+python -m merge_gate demo --no-llm # force rules + ownership only, no API calls
 ```
 
 Try the whole loop without any API:

@@ -50,6 +50,22 @@ def stub_report(pr_id: str) -> VerdictReport:
     return report
 
 
+def _llm_flags(parser: argparse.ArgumentParser) -> None:
+    g = parser.add_mutually_exclusive_group()
+    g.add_argument("--llm", dest="llm", action="store_true", default=None,
+                   help="force Muse Spark tests and summary (default: on when MUSE_API_KEY is set)")
+    g.add_argument("--no-llm", dest="llm", action="store_false", help="rules and ownership only, no API calls")
+
+
+def _use_llm(args: argparse.Namespace) -> bool:
+    """Default: on when a Muse key is available (.env / .env.local / environment), else off."""
+    from .llm import has_key
+
+    on = has_key() if args.llm is None else args.llm
+    print(f"[merge-gate] Muse Spark {'ON' if on else 'OFF (no MUSE_API_KEY; rules + ownership only)'}", file=sys.stderr)
+    return on
+
+
 def _load_report(path: str) -> VerdictReport:
     with open(path, encoding="utf-8") as f:
         return VerdictReport.from_dict(json.load(f))
@@ -64,10 +80,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--pr", help="PR id (with --stub)")
     g.add_argument("--case", help="benchmark case directory")
     v.add_argument("--stub", action="store_true", help="return a fixed BLOCK report")
-    v.add_argument("--llm", action="store_true", help="add Muse Spark spec-only tests and summary")
+    _llm_flags(v)
 
     d = sub.add_parser("demo", help="build the demo repo in a temp dir and run the gate on its PRs")
-    d.add_argument("--llm", action="store_true")
+    _llm_flags(d)
     d.add_argument("--keep", default=None, help="build the demo repo here instead of a temp dir")
 
     c = sub.add_parser("validate", help="validate a report JSON file against the contract")
@@ -82,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--root", default="benchmark")
     b.add_argument("--split", choices=["train", "heldout"], default=None)
     b.add_argument("--stub", action="store_true")
-    b.add_argument("--llm", action="store_true")
+    _llm_flags(b)
 
     args = p.parse_args(argv)
 
@@ -96,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         from .bench import load_case
         from .verify import verify
 
-        print(verify(load_case(args.case).pr, use_llm=args.llm).to_json())
+        print(verify(load_case(args.case).pr, use_llm=_use_llm(args)).to_json())
         return 0
 
     if args.cmd == "validate":
@@ -136,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
         repo = build_demo_repo(root)
         prs = demo_prs(repo)
         with ThreadPoolExecutor(max_workers=len(prs)) as pool:
-            results = list(pool.map(lambda p: verify(p, use_llm=args.llm), prs))
+            use = _use_llm(args)
+            results = list(pool.map(lambda p: verify(p, use_llm=use), prs))
         for pr, r in zip(prs, results):
             print(f"===== {pr.pr_id}: {pr.title} -> {r.verdict} (route to {r.owners[0].name if r.owners else '?'})")
             print(format_message(r))
@@ -153,8 +170,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         from concurrent.futures import ThreadPoolExecutor
 
+        use = False if args.stub else _use_llm(args)
+
         def run(c):
-            return stub_report(c.pr.pr_id) if args.stub else verify(c.pr, use_llm=args.llm)
+            return stub_report(c.pr.pr_id) if args.stub else verify(c.pr, use_llm=use)
 
         with ThreadPoolExecutor(max_workers=6) as pool:
             reports = {c.pr.pr_id: r for c, r in zip(cases, pool.map(run, cases))}
