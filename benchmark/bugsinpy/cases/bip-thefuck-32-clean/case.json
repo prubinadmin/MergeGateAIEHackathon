@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-32-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "cb33c912e5f2f4c2da6b70d708ff0437bfcd3b94",
+  "head_ref": "722567d9b25d181b1b29f2aeeb93f6eae4253d1b",
+  "title": "Fix incorrect behaviour in thefuck/rules/ls_lah.py",
+  "issue_text": "There is a bug in thefuck/rules/ls_lah.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "nvbn.rm@gmail.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 32,
+    "github_url": "",
+    "buggy_commit": "cb33c912e5f2f4c2da6b70d708ff0437bfcd3b94",
+    "fixed_commit": "25cc98a21a3450a046caf418f08713c82a290805",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_ls_lah.py::test_match"
+  }
+}

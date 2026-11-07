@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-2-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "40ab4eb62db57627bff10cf029d29c94704086a2",
+  "head_ref": "cbe13516d86217041f460aa792573819f4e822da",
+  "title": "Fix incorrect behaviour in thefuck/utils.py",
+  "issue_text": "There is a bug in thefuck/utils.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "nvbn.rm@gmail.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 2,
+    "github_url": "",
+    "buggy_commit": "40ab4eb62db57627bff10cf029d29c94704086a2",
+    "fixed_commit": "78ef9eec88f43d5727986be2237f6e0e250cbbbc",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/test_utils.py::test_get_all_executables_pathsep"
+  }
+}

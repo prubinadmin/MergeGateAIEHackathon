@@ -4,7 +4,7 @@ import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
   API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode, getReplies, githubFor, prUrl,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -149,6 +149,8 @@ export default function WarRoom() {
   const [paging, setPaging] = useState<Record<string, { status: 'sending' | 'sent' | 'error'; note: string }>>({});
 
   const cancelRun = useRef<(() => void) | null>(null);
+  const seenReplies = useRef<Set<string> | null>(null);
+  const uiReplies = useRef<{ text: string; at: number }[]>([]);
   useEffect(() => () => cancelRun.current?.(), []);
 
   const refreshStats = useCallback(() => getStats().then(setStats).catch(() => {}), []);
@@ -203,7 +205,8 @@ export default function WarRoom() {
     setReplyBusy(true);
     patch(id, (c) => ({ ...c, bubbles: [...c.bubbles, { from: 'owner', text, at: now() }] }));
     try {
-      const r = await postReply(id, text);
+      uiReplies.current.push({ text, at: Date.now() });
+      const r = await postReply(id, text, githubFor(id));
       patch(id, (c) => ({
         ...c,
         ownerBlocked: c.ownerBlocked || r.action === 'block_pr',
@@ -218,7 +221,7 @@ export default function WarRoom() {
   const page = async (id: string) => {
     setPaging((all) => ({ ...all, [id]: { status: 'sending', note: '' } }));
     try {
-      const m = await pageOwner(id, '');
+      const m = await pageOwner(id, prUrl(id), githubFor(id));
       const next = !m.sent
         ? { status: 'error' as const, note: 'Nothing sent: this PR has no code owner on file.' }
         : m.sent.startsWith('console-')
@@ -229,6 +232,34 @@ export default function WarRoom() {
       setPaging((all) => ({ ...all, [id]: { status: 'error', note: (e as Error).message } }));
     }
   };
+
+  // Show replies that arrive from a real phone (Sendblue webhook) in the phone panel. Live gate only.
+  useEffect(() => {
+    if (recorded) return;
+    const tick = async () => {
+      try {
+        const replies = await getReplies();
+        if (seenReplies.current === null) { seenReplies.current = new Set(replies.map((x) => x.hash)); return; }
+        for (const rec of replies) {
+          if (seenReplies.current.has(rec.hash)) continue;
+          seenReplies.current.add(rec.hash);
+          const raw = String(rec.data.raw || '');
+          const mine = uiReplies.current.findIndex((u) => u.text === raw && Date.now() - u.at < 15000);
+          if (mine >= 0) { uiReplies.current.splice(mine, 1); continue; }  // sent from this page: already shown
+          if (rec.data.action === 'rejected') continue;
+          patch(rec.data.pr_id, (c) => ({
+            ...c,
+            ownerBlocked: c.ownerBlocked || rec.data.action === 'block_pr',
+            bubbles: [...c.bubbles, { from: 'owner', text: `${raw}  (from ${rec.data.owner}'s phone)`, at: now() }],
+          }));
+          refreshStats();
+        }
+      } catch { /* gate unreachable: the banner already says so */ }
+    };
+    tick();
+    const h = setInterval(tick, 2500);
+    return () => clearInterval(h);
+  }, [recorded, refreshStats]);
 
   const pr = prs.find((p) => p.pr_id === sel);
   const c = cases[sel] || EMPTY;

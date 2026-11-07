@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-25-bad",
+  "repo": "target_repos/thefuck",
+  "base_ref": "298c04f89c081dc16c8653aa017ca85dd14bfad6",
+  "head_ref": "90d3e3bb0a07280e62c3b4ee7302cb3671e31038",
+  "title": "Simplify thefuck/rules/mkdir_p.py",
+  "issue_text": "Clean up thefuck/rules/mkdir_p.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "michael.lee@reporo.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 25,
+    "github_url": "",
+    "buggy_commit": "42a8b4f639269886e468762e6d100b6f01aad8ab",
+    "fixed_commit": "298c04f89c081dc16c8653aa017ca85dd14bfad6",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_mkdir_p.py::test_get_new_command"
+  }
+}

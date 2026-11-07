@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-cookiecutter-4-bad",
+  "repo": "target_repos/cookiecutter",
+  "base_ref": "457a1a4e862aab4102b644ff1d2b2e2b5a766b3c",
+  "head_ref": "5cb004f316d0d21d1446c2cf15dc59b59e885313",
+  "title": "Simplify cookiecutter/exceptions.py, cookiecutter/generate.py, cookiecutter/hooks.py",
+  "issue_text": "Clean up cookiecutter/exceptions.py, cookiecutter/generate.py, cookiecutter/hooks.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "eliasdorneles@gmail.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "cookiecutter",
+    "bug": 4,
+    "github_url": "",
+    "buggy_commit": "9568ab6ecd2d6836646006c59473c4a4ac0dee04",
+    "fixed_commit": "457a1a4e862aab4102b644ff1d2b2e2b5a766b3c",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/test_hooks.py::TestExternalHooks::test_run_failing_hook"
+  }
+}

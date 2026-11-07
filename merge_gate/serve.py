@@ -252,6 +252,12 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 if urllib.parse.urlparse(self.path).path == "/api/sendblue":
                     return self._sendblue(body)
                 if self.path == "/api/reply":
+                    # Owner replies from a phone come through /api/sendblue (token + owner's verified number).
+                    # This endpoint is only for the War Room page on the presenter's laptop: without an allowed
+                    # browser Origin, anyone on the machine could curl a fake BLOCK or FALSE ALARM.
+                    if self.headers.get("Origin") not in ALLOWED_ORIGINS:
+                        store.append("reply_rejected", {"pr_id": body.get("pr_id"), "reason": "not from the War Room UI"})
+                        return self._send(403, {"error": "replies are accepted only from the War Room UI; phones use /api/sendblue"})
                     r = state.report(body["pr_id"])
                     reply = parse_reply(body.get("text", ""))
                     action = handle_reply(r, reply, body.get("pr_url", ""))

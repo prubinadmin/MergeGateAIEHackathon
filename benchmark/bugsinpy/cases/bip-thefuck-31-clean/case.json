@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-31-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "66e2ec7e3f0d3f848c01d87bb3503b0ff90fc78a",
+  "head_ref": "b3b3eae84790f679118b1424b6100cd1de818511",
+  "title": "Fix incorrect behaviour in thefuck/rules/git_diff_staged.py",
+  "issue_text": "There is a bug in thefuck/rules/git_diff_staged.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "scorphus@gmail.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 31,
+    "github_url": "",
+    "buggy_commit": "66e2ec7e3f0d3f848c01d87bb3503b0ff90fc78a",
+    "fixed_commit": "1285303363bc420bd7606bd5f808e3f2b4f0e83f",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_git_diff_staged.py::test_get_new_command"
+  }
+}

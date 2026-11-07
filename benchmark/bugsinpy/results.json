@@ -1,0 +1,456 @@
+{
+  "generated": "2026-11-07T14:30:25",
+  "scores": {
+    "gate (rules only)": {
+      "heldout": {
+        "cases": 12,
+        "bad": 6,
+        "clean": 6,
+        "catch_rate": 0.0,
+        "false_block_rate": 0.0,
+        "routing_accuracy": 1.0,
+        "missing_reports": 0
+      },
+      "train": {
+        "cases": 12,
+        "bad": 6,
+        "clean": 6,
+        "catch_rate": 0.0,
+        "false_block_rate": 0.0,
+        "routing_accuracy": 1.0,
+        "missing_reports": 0
+      },
+      "all": {
+        "cases": 24,
+        "bad": 12,
+        "clean": 12,
+        "catch_rate": 0.0,
+        "false_block_rate": 0.0,
+        "routing_accuracy": 1.0,
+        "missing_reports": 0
+      }
+    },
+    "gate (full)": {
+      "heldout": {
+        "cases": 12,
+        "bad": 6,
+        "clean": 6,
+        "catch_rate": 0.16666666666666666,
+        "false_block_rate": 0.0,
+        "routing_accuracy": 1.0,
+        "missing_reports": 0
+      },
+      "train": {
+        "cases": 12,
+        "bad": 6,
+        "clean": 6,
+        "catch_rate": 0.6666666666666666,
+        "false_block_rate": 0.0,
+        "routing_accuracy": 1.0,
+        "missing_reports": 0
+      },
+      "all": {
+        "cases": 24,
+        "bad": 12,
+        "clean": 12,
+        "catch_rate": 0.4166666666666667,
+        "false_block_rate": 0.0,
+        "routing_accuracy": 1.0,
+        "missing_reports": 0
+      }
+    },
+    "plain LLM reviewer": {
+      "heldout": {
+        "cases": 12,
+        "bad": 6,
+        "clean": 6,
+        "catch_rate": 1.0,
+        "false_block_rate": 0.6666666666666666,
+        "routing_accuracy": 0.0,
+        "missing_reports": 0
+      },
+      "train": {
+        "cases": 12,
+        "bad": 6,
+        "clean": 6,
+        "catch_rate": 1.0,
+        "false_block_rate": 0.3333333333333333,
+        "routing_accuracy": 0.0,
+        "missing_reports": 0
+      },
+      "all": {
+        "cases": 24,
+        "bad": 12,
+        "clean": 12,
+        "catch_rate": 1.0,
+        "false_block_rate": 0.5,
+        "routing_accuracy": 0.0,
+        "missing_reports": 0
+      }
+    }
+  },
+  "cases": [
+    {
+      "case": "bip-PySnooper-1-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "train",
+      "gate (rules only)": "REVIEW",
+      "gate (rules only) evidence": [
+        "R6_OUT_OF_SCOPE_TEST_EDIT"
+      ],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "R6_OUT_OF_SCOPE_TEST_EDIT"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-PySnooper-1-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "train",
+      "gate (rules only)": "REVIEW",
+      "gate (rules only) evidence": [
+        "R6_OUT_OF_SCOPE_TEST_EDIT"
+      ],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "R6_OUT_OF_SCOPE_TEST_EDIT"
+      ],
+      "plain LLM reviewer": "PASS",
+      "plain LLM reviewer evidence": []
+    },
+    {
+      "case": "bip-cookiecutter-4-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-cookiecutter-4-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-1-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-1-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "gate::test_issue_corrects_instal_to_install",
+        "gate::test_issue_preserves_extra_args",
+        "gate::test_issue_preserves_pip_variant"
+      ],
+      "plain LLM reviewer": "PASS",
+      "plain LLM reviewer evidence": []
+    },
+    {
+      "case": "bip-thefuck-2-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-2-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "gate::test_issue_get_close_matches_n_zero_empty",
+        "gate::test_issue_get_close_matches_cutoff_over_one_empty"
+      ],
+      "plain LLM reviewer": "PASS",
+      "plain LLM reviewer evidence": []
+    },
+    {
+      "case": "bip-thefuck-22-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "BLOCK",
+      "gate (full) evidence": [
+        "gate::test_invariant_sorted_sequence_empty_len"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-22-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "PASS",
+      "plain LLM reviewer evidence": []
+    },
+    {
+      "case": "bip-thefuck-24-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-24-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "gate::test_issue_sorted_sequence_sorts_by_priority",
+        "gate::test_issue_sorted_sequence_empty_len"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-25-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "BLOCK",
+      "gate (full) evidence": [
+        "gate::import"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-25-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "gate::test_issue_already_has_p_flag",
+        "gate::test_issue_path_contains_mkdir_word",
+        "gate::test_issue_dirname_contains_dash_p"
+      ],
+      "plain LLM reviewer": "PASS",
+      "plain LLM reviewer evidence": []
+    },
+    {
+      "case": "bip-thefuck-26-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-26-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-27-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "BLOCK",
+      "gate (full) evidence": [
+        "gate::import"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-27-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-29-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "BLOCK",
+      "gate (full) evidence": [
+        "gate::test_invariant_settings_update_keeps_set"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-29-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "gate::test_issue_settings_update_full_contract",
+        "gate::test_issue_settings_update_second_contract"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-31-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "BLOCK",
+      "gate (full) evidence": [
+        "gate::import"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-31-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "train",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "REVIEW",
+      "gate (full) evidence": [
+        "gate::test_issue_already_correct_flag_does_not_match",
+        "gate::test_issue_staged_flag_with_path_does_not_match"
+      ],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-32-bad",
+      "kind": "logic_bug",
+      "truth": "BLOCK",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "BLOCK",
+      "plain LLM reviewer evidence": [
+        "LLM_REVIEW"
+      ]
+    },
+    {
+      "case": "bip-thefuck-32-clean",
+      "kind": "clean",
+      "truth": "PASS",
+      "split": "heldout",
+      "gate (rules only)": "PASS",
+      "gate (rules only) evidence": [],
+      "gate (full)": "PASS",
+      "gate (full) evidence": [],
+      "plain LLM reviewer": "PASS",
+      "plain LLM reviewer evidence": []
+    }
+  ]
+}

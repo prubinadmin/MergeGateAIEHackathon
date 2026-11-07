@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-1-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "2ced7a7f33ae0bec3ffc7a43ce95330bdf6cfcb9",
+  "head_ref": "431d916c16c8fe77ac86a7bce5d5df0ff94b4355",
+  "title": "Fix incorrect behaviour in thefuck/rules/pip_unknown_command.py",
+  "issue_text": "There is a bug in thefuck/rules/pip_unknown_command.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "nvbn.rm@gmail.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 1,
+    "github_url": "",
+    "buggy_commit": "2ced7a7f33ae0bec3ffc7a43ce95330bdf6cfcb9",
+    "fixed_commit": "444908ce1c17767ef4aaf9e0b4950497914f7f63",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_pip_unknown_command.py::test_get_new_command"
+  }
+}
