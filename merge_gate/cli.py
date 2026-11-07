@@ -107,6 +107,10 @@ def main(argv: list[str] | None = None) -> int:
     lg = sub.add_parser("log", help="show the run log and check its hash chain")
     lg.add_argument("--tail", type=int, default=10)
 
+    ln = sub.add_parser("learn", help="one learning round: propose rule changes, keep them only if held-out PRs improve")
+    _llm_flags(ln)
+    ln.add_argument("--root", default="benchmark")
+
     b = sub.add_parser("bench", help="run the gate on benchmark cases and print metrics")
     b.add_argument("--root", default="benchmark")
     b.add_argument("--split", choices=["train", "heldout"], default=None)
@@ -193,6 +197,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"===== {pr.pr_id}: {pr.title} -> {r.verdict} (route to {r.owners[0].name if r.owners else '?'})")
             print(format_message(r))
             print()
+        return 0
+
+    if args.cmd == "learn":
+        from .bench import load_cases
+        from .learn import collect_raw, false_alarms_from_log, learn_round
+
+        cases = load_cases(args.root)
+        if not cases:
+            print(f"no cases under {args.root}/cases", file=sys.stderr)
+            return 1
+        raw = collect_raw(cases, use_llm=_use_llm(args))
+        result = learn_round(cases, raw, false_alarms_from_log())
+        print(json.dumps({k: v for k, v in result.items() if k != "candidates"}, indent=2))
+        for c in result["candidates"]:
+            print(f"  {'KEEP' if c['adopted_so_far'] else 'roll back'}: {c['change']}  held-out {c['heldout']['catch_rate']:.2f} catch / {c['heldout']['false_block_rate']:.2f} false-block")
         return 0
 
     if args.cmd == "bench":

@@ -29,7 +29,30 @@ python -m merge_gate verify --pr demo-1 --stub > report.json
 python -m merge_gate notify report.json --reply BLOCK
 ```
 
-### 2. Interactive Web UI & Simulator
+### 2. Real gate on GitHub, API, log, learning
+
+```bash
+python -m merge_gate serve            # HTTP API on 127.0.0.1:8787 for the web UI and the iMessage webhook
+python -m merge_gate log              # run log; checks the hash chain
+python -m merge_gate learn            # one learning round on benchmark/ (needs Peter's cases)
+python -m merge_gate ci               # inside GitHub Actions: see templates/merge-gate.yml
+```
+
+API (all JSON):
+
+| Endpoint | Body | Returns |
+| --- | --- | --- |
+| `GET /api/demo` | | the three demo PRs with diffs |
+| `POST /api/verify` | `{"pr_id": "demo-1"}` | real verdict report |
+| `POST /api/message` | `{"pr_id": "demo-1"}` | `{"to": owner, "text": iMessage text}` |
+| `POST /api/reply` | `{"pr_id": "demo-1", "text": "BLOCK", "github": {"repo": "o/r", "number": 7}}` | action; BLOCK fails the PR's `merge-gate` check |
+| `GET /api/log` | | log records, `chain_ok` |
+
+To enforce on a repo: copy `templates/merge-gate.yml` to `.github/workflows/`, add `MUSE_API_KEY` as a
+secret, and make `merge-gate` a required status check. BLOCK -> failure, REVIEW -> pending,
+PASS -> success. Only a code owner's GitHub approval (`OWNER_GITHUB` variable) overrides a finding.
+
+### 3. Interactive Web UI & Simulator
 ```bash
 npm install
 npm run dev
@@ -48,6 +71,10 @@ npm run dev
 | Ownership resolver (line-level blame, recency-weighted) | Michael | `merge_gate/owners.py` | done |
 | Sandbox runner (git archive, scrubbed env, timeout) | Michael | `merge_gate/sandbox.py` | done |
 | Spec-only test writer + summary (Muse Spark) | Michael | `merge_gate/testgen.py`, `merge_gate/llm.py` | done |
+| GitHub status check, PR comment, owner BLOCK | Michael | `merge_gate/github.py`, `merge_gate/ci.py`, `templates/merge-gate.yml` | done |
+| HTTP API for UI + iMessage webhook | Michael | `merge_gate/serve.py` | done |
+| Hash-chained run log (Mongo mirror optional) | Michael | `merge_gate/store.py` | done |
+| Learning loop, held-out adoption | Michael | `merge_gate/learn.py`, `gate_versions/` | done; needs benchmark cases |
 | iMessage send / reply | TAAZ | `merge_gate/notify.py` (`Notifier`, `parse_reply`, `handle_reply`) | console stub works; plug in the iMessage provider |
 | Benchmark cases + scoring | Peter | `benchmark/`, `merge_gate/bench.py` | format + scoring done; cases to build |
 | Interactive Web Dashboard & Simulator | Peter / Frontend | `src/`, `index.html` | done |
@@ -86,3 +113,23 @@ Owner phone replies:
 - `WHY`: Returns the reproducing failing test case and output traceback.
 - `OK`: Does not merge. Replies with authenticated GitHub review link.
 - `FALSE ALARM`: Logged as feedback into the Secondary Learning Track.
+
+---
+
+## Built during the hackathon
+
+Everything in this repository was written on Nov 7, 2026, after 10:45, at the AIE Code Summit 2026 Hackathon.
+
+- Verdict contract and CLI (`merge_gate/schema.py`, `merge_gate/cli.py`)
+- PR access over git, deterministic verdict (`merge_gate/pr.py`, `merge_gate/verify.py`)
+- Deterministic rules R1-R9 (`merge_gate/rules.py`)
+- Line-level ownership resolver (`merge_gate/owners.py`)
+- Sandboxed pytest runner (`merge_gate/sandbox.py`)
+- Muse Spark client, spec-only test writer, iMessage summary (`merge_gate/llm.py`, `merge_gate/testgen.py`)
+- GitHub status check, PR comment, owner BLOCK, Actions entry point (`merge_gate/github.py`, `merge_gate/ci.py`, `templates/merge-gate.yml`)
+- HTTP API (`merge_gate/serve.py`), hash-chained run log (`merge_gate/store.py`)
+- Learning loop with held-out adoption (`merge_gate/learn.py`)
+- iMessage contract with a console notifier (`merge_gate/notify.py`)
+- Benchmark case format and scoring (`benchmark/README.md`, `merge_gate/bench.py`)
+- Demo repo with three PRs; authors are simulated in commit metadata only (`merge_gate/demo.py`)
+- Web UI and phone simulator (`src/`, `index.html`)

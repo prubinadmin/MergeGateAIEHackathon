@@ -52,8 +52,11 @@ def llm_summary(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], own
     return text[:400] if text else template_summary(pr, verdict, evidence)
 
 
-def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60) -> VerdictReport:
-    """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary."""
+def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current") -> VerdictReport:
+    """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary.
+
+    config: "current" = the adopted gate version in gate_versions/, None = raw rules (used by the learner).
+    """
     evidence: list[Evidence] = list(check_rules(pr))
     notes: list[str] = []
 
@@ -67,8 +70,12 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60) -> Verdi
         elif tg.dropped_invariants:
             notes.append(f"dropped {len(tg.dropped_invariants)} generated tests that failed on base")
 
+    from .learn import apply_config, load_current
     from .owners import resolve_owners
 
+    cfg = load_current() if config == "current" else config
+    evidence = apply_config(evidence, cfg)
+    gate_version = cfg.version if cfg else GATE_VERSION
     owners: list[Owner] = resolve_owners(pr)
     verdict = decide(evidence)
     summary = (
@@ -82,7 +89,7 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60) -> Verdi
         evidence=evidence,
         owners=owners,
         summary=summary + (f" [{'; '.join(notes)}]" if notes else ""),
-        gate_version=GATE_VERSION,
+        gate_version=gate_version,
     )
     report.run_hash = run_hash(
         {
@@ -90,7 +97,7 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60) -> Verdi
             "verdict": verdict,
             "evidence": [e.__dict__ for e in evidence],
             "owners": [o.email for o in owners],
-            "gate": GATE_VERSION,
+            "gate": gate_version,
         }
     )
     return report
