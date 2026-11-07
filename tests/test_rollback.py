@@ -1,6 +1,14 @@
-"""rollback: re-verify a merged commit, revert it on BLOCK. No network: push and the GitHub API are faked."""
+"""rollback: re-verify a merged commit, revert it on BLOCK.
 
+No network, and nothing in merge_gate is mocked: the GitHub REST API is faked at urllib.request.urlopen, and
+pushes go through real git to a local bare repo that https://github.com/o/r.git is rewritten to (insteadOf).
+"""
+
+import io
+import json
 import subprocess
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -15,15 +23,32 @@ def out(repo, *args):
     return subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def no_token(monkeypatch, tmp_path):
+    """Never pick up a real token from the environment or a .env.local in the cwd."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "LOG_PATH", str(tmp_path / "log.jsonl"))
-
-    def no_token():  # never pick up a real token from the environment or .env.local
-        raise github.GitHubError("GITHUB_TOKEN is not set")
-
-    monkeypatch.setattr(github, "_token", no_token)
+    no_token(monkeypatch, tmp_path)
     return build_demo_repo(str(tmp_path))
+
+
+def fake_remote(repo, tmp_path, exists=True):
+    """Point https://github.com/o/r.git at a local bare repo for this clone; returns the bare repo's path.
+    exists=False points it at a missing path, so a push really fails."""
+    bare = str(tmp_path / "remote.git")
+    if exists:
+        subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
+    git(repo, "config", f"url.{bare}.insteadOf", "https://github.com/o/r.git")
+    return bare
+
+
+def remote_branches(bare):
+    return out(bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/").splitlines()
 
 
 def merge(repo, branch, ff=False):
@@ -64,33 +89,43 @@ def test_clean_plain_commit_is_left_alone(repo):
 
 
 class FakeGitHub:
-    """Stands in for github._call. Knobs: prs (commits/{sha}/pulls), statuses, remote_branch, open_prs."""
+    """Fake GitHub REST API at the HTTP layer (urllib.request.urlopen); the real github._call runs.
+    Knobs: prs (commits/{sha}/pulls), statuses, remote_branch, open_prs, fail (path substrings -> HTTP 500)."""
 
     def __init__(self, monkeypatch, prs=(), statuses=(), remote_branch=False, open_prs=(), fail=()):
         self.calls, self.prs, self.statuses = [], list(prs), list(statuses)
         self.remote_branch, self.open_prs, self.fail = remote_branch, list(open_prs), set(fail)
-        monkeypatch.setattr(github, "_token", lambda: "t0k")
-        monkeypatch.setattr(github, "_call", self)
+        monkeypatch.setenv("GITHUB_TOKEN", "t0k")
+        monkeypatch.setattr(urllib.request, "urlopen", self.urlopen)
 
-    def __call__(self, method, path, body=None):
+    def urlopen(self, req, timeout=None):
+        assert req.full_url.startswith(github.API + "/"), req.full_url
+        assert req.get_header("Authorization") == "Bearer t0k"
+        method, path = req.get_method(), req.full_url[len(github.API):]
+        body = json.loads(req.data) if req.data is not None else None
         self.calls.append((method, path, body))
+        status, payload = self.respond(method, path)
+        data = io.BytesIO(json.dumps(payload).encode())
+        if status != 200:
+            raise urllib.error.HTTPError(req.full_url, status, "err", {}, data)
+        return data
+
+    def respond(self, method, path):
         for f in self.fail:
             if f in path:
-                raise github.GitHubError(f"{method} {path}: HTTP 500 boom")
+                return 500, {"message": "boom"}
         if path == "/repos/o/r":
-            return {"default_branch": "main"}
+            return 200, {"default_branch": "main"}
         if path.endswith("/pulls") and "/commits/" in path:
-            return self.prs
+            return 200, self.prs
         if path.endswith("/status"):
-            return {"statuses": self.statuses}
+            return 200, {"statuses": self.statuses}
         if "/git/ref/heads/" in path:
-            if self.remote_branch:
-                return {"ref": path}
-            raise github.GitHubError(f"GET {path}: HTTP 404 Not Found")
+            return (200, {"ref": path}) if self.remote_branch else (404, {"message": "Not Found"})
         if method == "GET" and "/pulls?" in path:
-            return self.open_prs
+            return 200, self.open_prs
         if method == "POST" and path == "/repos/o/r/pulls":
-            return {"html_url": "https://github.com/o/r/pull/9"}
+            return 200, {"html_url": "https://github.com/o/r/pull/9"}
         raise AssertionError(path)
 
     def posts(self):
@@ -101,33 +136,66 @@ def revert_branches(repo):
     return [b for b in out(repo, "branch", "--list", "--format=%(refname:short)").splitlines() if b.startswith("merge-gate/revert-")]
 
 
-def test_push_opens_revert_pr(repo, monkeypatch):
+def test_push_opens_revert_pr(repo, tmp_path, monkeypatch):
     sha = merge(repo, "pr/demo-1")
-    pushed = []
+    bare = fake_remote(repo, tmp_path)
     fake = FakeGitHub(monkeypatch)
     calls = fake.calls
-    monkeypatch.setattr(rollback, "push_branch", lambda repo_path, gh, branch: pushed.append((gh, branch)))
 
     result = rollback.rollback(repo, sha, push=True, github_repo="o/r")
 
-    assert pushed == [("o/r", f"merge-gate/revert-{sha[:12]}")]
+    branch = f"merge-gate/revert-{sha[:12]}"
+    assert remote_branches(bare) == [branch]  # really pushed, and only that branch
+    assert out(bare, "rev-parse", branch) == out(repo, "rev-parse", branch)
     post = [c for c in calls if c[0] == "POST"][0]
     assert post[1] == "/repos/o/r/pulls"
-    assert post[2]["head"] == pushed[0][1] and post[2]["base"] == "main"
+    assert post[2]["head"] == branch and post[2]["base"] == "main"
     assert post[2]["title"] == f"Revert {sha[:12]}: blocked by Merge Gate"
     assert result["run_hash"] in post[2]["body"] and "R1_" in post[2]["body"]
     assert result["pr_url"] == "https://github.com/o/r/pull/9"
 
 
-def test_push_never_forces(monkeypatch):
-    seen = []
+def test_push_never_forces(tmp_path, monkeypatch):
+    no_token(monkeypatch, tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "t0k")
-    monkeypatch.setattr(rollback, "_git", lambda repo, *args, **kw: seen.append((args, kw)) or "")
-    rollback.push_branch("/r", "o/r", "merge-gate/revert-abc")
-    args, kw = seen[0]
-    assert args[0] == "push" and not any(a.startswith("-f") or a.startswith("--force") or a.startswith("+") for a in args)
+    branch, a, b = "merge-gate/revert-abc", ("A", "a@example.com"), ("B", "b@example.com")
+    local = str(tmp_path / "local")
+    subprocess.run(["git", "init", "-q", "-b", "main", local], check=True)
+    git(local, "commit", "-q", "--allow-empty", "-m", "base", author=a)
+    bare = fake_remote(local, tmp_path)
+    git(local, "push", "-q", bare, "main")
+    git(local, "checkout", "-q", "-b", branch)
+    git(local, "commit", "-q", "--allow-empty", "-m", "ours", author=a)
+    # someone else's commit already sits on the remote branch: only a force push could replace it
+    other = str(tmp_path / "other")
+    subprocess.run(["git", "clone", "-q", bare, other], check=True)
+    git(other, "checkout", "-q", "-b", branch)
+    git(other, "commit", "-q", "--allow-empty", "-m", "theirs", author=b)
+    git(other, "push", "-q", "origin", branch)
+    theirs = out(bare, "rev-parse", branch)
+
+    seen, real_run = [], subprocess.run
+
+    def spy_run(argv, *args, **kw):  # observe the git subprocess boundary; the real git still runs
+        seen.append((list(argv), kw.get("env") or {}))
+        return real_run(argv, *args, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    with pytest.raises(subprocess.CalledProcessError):  # non-fast-forward: rejected, never forced
+        rollback.push_branch(local, "o/r", branch)
+    monkeypatch.setattr(subprocess, "run", real_run)
+    assert out(bare, "rev-parse", branch) == theirs  # remote branch untouched
+
+    args, env = next((argv[3:], env) for argv, env in seen if argv[3:4] == ["push"])
+    assert not any(x.startswith("-f") or x.startswith("--force") or x.startswith("+") for x in args)
     assert "t0k" not in " ".join(args)  # token travels in env config, not argv
-    assert args[-1] == "refs/heads/merge-gate/revert-abc:refs/heads/merge-gate/revert-abc"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert env["GIT_CONFIG_VALUE_0"].startswith("AUTHORIZATION: basic ")
+    assert args[-1] == f"refs/heads/{branch}:refs/heads/{branch}"
+
+    git(other, "push", "-q", "origin", "--delete", branch)  # nothing in the way: a normal push lands
+    rollback.push_branch(local, "o/r", branch)
+    assert out(bare, "rev-parse", branch) == out(local, "rev-parse", branch)
 
 
 def test_cli_rollback(repo, capsys):
@@ -251,12 +319,7 @@ def test_root_commit_has_nothing_to_compare(tmp_path, monkeypatch, capsys):
 # --- branch hygiene ---
 
 def test_preflight_fails_before_any_branch(repo, monkeypatch):
-    sha = merge(repo, "pr/demo-1")
-
-    def no_token():
-        raise github.GitHubError("GITHUB_TOKEN is not set")
-
-    monkeypatch.setattr(github, "_token", no_token)
+    sha = merge(repo, "pr/demo-1")  # the repo fixture leaves no GITHUB_TOKEN
     assert cli_main(["rollback", sha, "--repo", repo, "--push", "--github", "o/r", "--no-llm"]) == 2
     assert cli_main(["rollback", sha, "--repo", repo, "--push", "--github", "not a repo", "--no-llm"]) == 2
     FakeGitHub(monkeypatch, fail={"/repos/o/r"})  # token ok, default-branch lookup fails
@@ -264,39 +327,34 @@ def test_preflight_fails_before_any_branch(repo, monkeypatch):
     assert revert_branches(repo) == [] and store.read(kind="rollback") == []
 
 
-def test_failed_push_deletes_local_branch(repo, monkeypatch):
+def test_failed_push_deletes_local_branch(repo, tmp_path, monkeypatch):
     sha = merge(repo, "pr/demo-1")
     FakeGitHub(monkeypatch)
-
-    def boom(*a):
-        raise subprocess.CalledProcessError(1, "git push")
-
-    monkeypatch.setattr(rollback, "push_branch", boom)
+    fake_remote(repo, tmp_path, exists=False)  # the real git push fails
     with pytest.raises(subprocess.CalledProcessError):
         rollback.rollback(repo, sha, push=True, github_repo="o/r")
     assert revert_branches(repo) == []
 
 
-def test_failed_commit_leaves_no_branch_at_blocked_sha(repo, monkeypatch):
+def test_failed_commit_leaves_no_branch_at_blocked_sha(repo, tmp_path):
     sha = merge(repo, "pr/demo-1")
-
-    def boom(*a):
-        raise RuntimeError("commit failed")
-
-    monkeypatch.setattr(rollback, "commit_message", boom)  # fails after the worktree branch exists
-    with pytest.raises(RuntimeError):
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    git(repo, "config", "core.hooksPath", str(hooks))  # the real git commit fails after the worktree branch exists
+    with pytest.raises(subprocess.CalledProcessError):
         rollback.rollback(repo, sha)
     assert revert_branches(repo) == [] and len(out(repo, "worktree", "list").splitlines()) == 1
 
 
-def test_existing_remote_branch_is_reused(repo, monkeypatch):
+def test_existing_remote_branch_is_reused(repo, tmp_path, monkeypatch):
     sha = merge(repo, "pr/demo-1")
-    pushed = []
-    monkeypatch.setattr(rollback, "push_branch", lambda *a: pushed.append(a))
+    bare = fake_remote(repo, tmp_path)
     fake = FakeGitHub(monkeypatch, remote_branch=True)  # pushed earlier, PR creation failed
     result = rollback.rollback(repo, sha, push=True, github_repo="o/r")
     assert result["action"] == "revert_pr" and result["pr_url"] == "https://github.com/o/r/pull/9"
-    assert not pushed and len(fake.posts()) == 1 and revert_branches(repo) == []
+    assert remote_branches(bare) == [] and len(fake.posts()) == 1 and revert_branches(repo) == []  # nothing pushed
     fake = FakeGitHub(monkeypatch, remote_branch=True, open_prs=[{"html_url": "https://github.com/o/r/pull/8"}])
     assert rollback.rollback(repo, sha, push=True, github_repo="o/r")["pr_url"] == "https://github.com/o/r/pull/8"
     assert not fake.posts()
