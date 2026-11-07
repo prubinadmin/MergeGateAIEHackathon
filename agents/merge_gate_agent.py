@@ -4,7 +4,8 @@
   python -m agents.merge_gate_agent
 
 Speaks the Agent Chat Protocol (uagents_core.contrib.protocols.chat), mailbox=True so ASI:One can reach
-it through Agentverse. Every message is acknowledged; replies are TextContent, plus an ASI:One
+it through Agentverse. It orchestrates four specialist uAgents (agents/team.py: Rules, OwnerRouter,
+TestWriter, Sandbox) over typed messages, then decides in plain code (merge_gate.verify). Every message is acknowledged; replies are TextContent, plus an ASI:One
 Interactive Card (MetadataContent) for verdicts.
 
 Commands: "list PRs", "verify demo-1", "why demo-1", "block demo-1 <note>", "help".
@@ -79,7 +80,7 @@ def parse_command(text: str) -> Command:
     return Command("verify", pr_id) if pr_id else Command("help")
 
 
-def format_verdict(r: VerdictReport) -> str:
+def format_verdict(r: VerdictReport, trace: list[str] | tuple = ()) -> str:
     lines = [f"{r.verdict}: {r.pr_id}", r.summary]
     if r.evidence:
         lines.append("Evidence:")
@@ -91,6 +92,8 @@ def format_verdict(r: VerdictReport) -> str:
         o = r.owners[0]
         lines.append(f"Routed to {o.name} <{o.email}>, who wrote {o.lines} of the changed lines.")
     lines.append(f"run_hash {r.run_hash} (gate {r.gate_version})")
+    if trace:
+        lines += ["Agents:"] + [f"- {t}" for t in trace]
     if r.verdict != "PASS":
         lines.append(f'Say "why {r.pr_id}" or "block {r.pr_id}". A chat can stop a merge, never approve one.')
     return "\n".join(lines)
@@ -130,15 +133,22 @@ def verdict_card(r: VerdictReport) -> dict[str, str]:
 
 
 Send = Callable[[str, "dict[str, str] | None"], Awaitable[None]]
+# pr_id -> (report, one line per specialist agent). Default: the whole gate in-process.
+Run = Callable[[str], Awaitable["tuple[VerdictReport, list[str]]"]]
 
 
-async def handle(text: str, state, send: Send, use_llm: bool = False) -> None:
+async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run | None = None) -> None:
     """One chat message -> one or more replies via send(text, card_metadata_or_None).
 
     state is a merge_gate.serve.State (the same object behind the HTTP API). Gate calls block, so they
     run in a worker thread; the agent stays responsive and the user sees "running" first.
     """
     cmd = parse_command(text)
+
+    async def in_process(pr_id: str):
+        return await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}), []
+
+    run = run or in_process
     try:
         if cmd.kind == "help":
             return await send(HELP, None)
@@ -157,9 +167,9 @@ async def handle(text: str, state, send: Send, use_llm: bool = False) -> None:
         report = state.reports.get(cmd.pr_id)
         if cmd.kind == "verify" or report is None:
             await send(f"Running the gate on {cmd.pr_id}: rules, code owners, sandbox...", None)
-            report = await asyncio.to_thread(state.verify, {"pr_id": cmd.pr_id, "llm": use_llm})
+            report, trace = await run(cmd.pr_id)
             if cmd.kind == "verify":
-                return await send(format_verdict(report), verdict_card(report))
+                return await send(format_verdict(report, trace), verdict_card(report))
         if cmd.kind == "why":
             return await send(handle_reply(report, parse_reply("WHY")).text, None)
         if cmd.kind == "block":
@@ -172,7 +182,8 @@ async def handle(text: str, state, send: Send, use_llm: bool = False) -> None:
         await send(f"The gate failed: {type(e).__name__}: {str(e)[:200]}. Try again, or \"list PRs\".", None)
 
 
-def build_agent(seed: str, port: int = 8001, use_llm: bool = False):
+def build_agents(seed: str, port: int = 8001, use_llm: bool = False) -> list:
+    """[orchestrator, Rules, OwnerRouter, TestWriter, Sandbox]. Only the orchestrator faces ASI:One."""
     from datetime import datetime, timezone
     from uuid import uuid4
 
@@ -183,9 +194,13 @@ def build_agent(seed: str, port: int = 8001, use_llm: bool = False):
 
     from merge_gate.serve import State
 
+    from .team import STEPS, fan_out, specialist
+
     state = State(use_llm)
     state.notifier = None  # this agent must never send an iMessage: any send() now fails loudly
     agent = Agent(name="merge-gate", seed=seed, port=port, mailbox=True, publish_agent_details=True)
+    team = [specialist(step, seed, agent.address) for step in STEPS]
+    addresses = {step: a.address for step, a in zip(STEPS, team)}
     proto = Protocol(spec=chat_protocol_spec)
 
     @proto.on_message(ChatMessage)
@@ -199,15 +214,21 @@ def build_agent(seed: str, port: int = 8001, use_llm: bool = False):
                 content.append(MetadataContent(type="metadata", metadata=card))
             await ctx.send(sender, ChatMessage(timestamp=datetime.now(timezone.utc), msg_id=uuid4(), content=content))
 
+        async def run(pr_id: str):
+            await asyncio.to_thread(state.demo)
+            pr = state.prs[pr_id]  # KeyError -> "Unknown PR"
+            steps, trace = await fan_out(ctx, addresses, pr, use_llm)
+            return await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}, None, steps), trace
+
         ctx.logger.info(f"chat from {sender}: {text[:120]!r}")
-        await handle(text, state, send, use_llm)
+        await handle(text, state, send, use_llm, run)
 
     @proto.on_message(ChatAcknowledgement)
     async def on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:
         pass
 
     agent.include(proto, publish_manifest=True)
-    return agent
+    return [agent, *team]
 
 
 def main() -> None:
@@ -217,8 +238,19 @@ def main() -> None:
     seed = os.environ.get("MERGE_GATE_AGENT_SEED", "")
     if len(seed) < 16:
         sys.exit("Set MERGE_GATE_AGENT_SEED to a long random phrase (it is the agent's identity; keep it secret).")
-    use_llm = os.environ.get("MERGE_GATE_AGENT_LLM") == "1"
-    build_agent(seed, int(os.environ.get("MERGE_GATE_AGENT_PORT", "8001")), use_llm).run()
+    from uagents import Bureau
+
+    # Like `merge_gate demo`: Muse Spark (TestWriter + Sandbox) is on when MUSE_API_KEY is set. MERGE_GATE_AGENT_LLM=0 turns it off.
+    use_llm = os.environ.get("MERGE_GATE_AGENT_LLM", "1" if os.environ.get("MUSE_API_KEY") else "0") == "1"
+    port = int(os.environ.get("MERGE_GATE_AGENT_PORT", "8001"))
+    agents = build_agents(seed, port, use_llm)
+    for a in agents[1:]:
+        print(f"[merge-gate] specialist {a.name}: {a.address}")
+    # Bureau does not print this itself; the inspector reaches the orchestrator through the Bureau's port.
+    print(f"[merge-gate] orchestrator (ASI:One-facing): {agents[0].address}\n[merge-gate] Agent inspector: "
+          f"https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A{port}&address={agents[0].address}", flush=True)
+    # One process, five agents, each with its own address; specialists are reached in-process.
+    Bureau(agents=agents, port=port).run()
 
 
 if __name__ == "__main__":

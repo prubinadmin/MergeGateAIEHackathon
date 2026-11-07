@@ -57,7 +57,7 @@ class State:
                 self._demo_ready = True
         return [p for k, p in self.prs.items() if k.startswith("demo-")]
 
-    def verify(self, body: dict, on_stage=None) -> VerdictReport:
+    def verify(self, body: dict, on_stage=None, steps=None) -> VerdictReport:
         from .verify import verify
 
         if "repo_path" in body:
@@ -77,7 +77,7 @@ class State:
                 raise KeyError(f"unknown pr_id {body.get('pr_id')!r}")
         use_llm = body.get("llm", self.use_llm)
         t0 = time.monotonic()
-        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage)
+        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage, steps=steps)
         store.log_report(report, source="api", ms=int((time.monotonic() - t0) * 1000), llm=bool(use_llm))
         with self.lock:
             self.prs[pr.pr_id] = pr

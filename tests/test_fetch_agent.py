@@ -124,11 +124,75 @@ def test_real_gate_on_demo_1_through_the_handler(tmp_path, monkeypatch):
     assert card is not None and "R1" in card["card_payload"]
 
 
-def test_build_agent_wires_chat_protocol():
+def test_build_agents_orchestrator_plus_four_specialists():
     pytest.importorskip("uagents")
-    from agents.merge_gate_agent import build_agent
+    from agents.merge_gate_agent import build_agents
 
     asyncio.set_event_loop(asyncio.new_event_loop())  # earlier asyncio.run() calls closed the default loop
-    agent = build_agent("test-seed-not-secret-0123456789", port=8799)
-    assert agent.address.startswith("agent1")
-    assert [p.name for p in agent.protocols.values()] == ["AgentChatProtocol"]
+    agents = build_agents("test-seed-not-secret-0123456789", port=8799)
+    assert len({a.address for a in agents}) == 5 and all(a.address.startswith("agent1") for a in agents)
+    assert [p.name for p in agents[0].protocols.values()] == ["AgentChatProtocol"]
+    assert [a.name for a in agents[1:]] == ["merge-gate-rules", "merge-gate-ownerrouter", "merge-gate-testwriter", "merge-gate-sandbox"]
+
+
+class FakeCtx:
+    """Stands in for the orchestrator's Context: 'delivers' each StepRequest to the real specialist code."""
+
+    def __init__(self, dead=(), flaky=()):
+        self.dead, self.flaky, self.calls = set(dead), set(flaky), []
+
+    async def send_and_receive(self, dest, req, response_type, timeout):
+        from agents.team import run_step
+        from merge_gate.pr import PullRequest
+
+        self.calls.append(req.step)
+        if req.step in self.dead or (req.step in self.flaky and self.calls.count(req.step) == 1):
+            return None, type("S", (), {"detail": "Timeout waiting for response"})()
+        out = run_step(req.step, PullRequest(**req.pr.model_dump()), req.source, req.timeout_s)
+        return response_type(step=req.step, ok=True, **out), None
+
+
+def _demo_state(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for k in ("SENDBLUE_API_KEY", "SENDBLUE_API_SECRET"):
+        monkeypatch.delenv(k, raising=False)
+    from merge_gate.serve import State
+
+    state = State(use_llm=False)
+    state.notifier = None
+    state.demo()
+    return state
+
+
+def test_fan_out_retries_then_falls_back_in_process_and_says_so(tmp_path, monkeypatch):
+    pytest.importorskip("uagents")
+    from agents.team import fan_out
+
+    state = _demo_state(tmp_path, monkeypatch)
+    addrs = {s: f"agent1{s}" for s in ("rules", "owners", "tests", "sandbox")}
+    ctx = FakeCtx(dead={"owners"}, flaky={"rules"})
+    steps, trace = asyncio.run(fan_out(ctx, addrs, state.prs["demo-1"], use_llm=False))
+    assert ctx.calls.count("rules") == 2 and ctx.calls.count("owners") == 2  # one retry each
+    assert "Rules agent: done" in trace[0] and "after a retry" in trace[0]
+    assert "OwnerRouter agent failed twice" in trace[1] and "in-process" in trace[1]
+    assert "skipped" in trace[2]
+    report = state.verify({"pr_id": "demo-1", "llm": False}, None, steps)
+    plain = state.verify({"pr_id": "demo-1", "llm": False})
+    assert report.verdict == "BLOCK" and report.evidence[0].id.startswith("R1")
+    assert report.run_hash == plain.run_hash  # same gate, same answer, whichever agent did the work
+
+
+def test_fan_out_with_llm_chains_testwriter_into_sandbox(tmp_path, monkeypatch):
+    pytest.importorskip("uagents")
+    import merge_gate.testgen as tg
+    from agents.team import fan_out
+
+    state = _demo_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(tg, "generate_tests", lambda pr: "def test_invariant_never_negative():\n"
+                        "    from shop.pricing import apply_discount\n    assert apply_discount(10, 150) == 0.0\n")
+    ctx = FakeCtx()
+    steps, trace = asyncio.run(fan_out(ctx, {s: s for s in ("rules", "owners", "tests", "sandbox")}, state.prs["demo-1"], use_llm=True))
+    assert sorted(ctx.calls) == ["owners", "rules", "sandbox", "tests"] and len(trace) == 4
+    res = steps["testgen"](None, 60)
+    assert res.kept_invariants == ["test_invariant_never_negative"]
+    assert [e.id for e in res.evidence] == ["gate::test_invariant_never_negative"]  # PR breaks the invariant

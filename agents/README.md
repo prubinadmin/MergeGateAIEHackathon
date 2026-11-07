@@ -1,10 +1,61 @@
 # Merge Gate agent for ASI:One (Fetch.ai)
 
 `merge_gate_agent.py` is a uAgent that speaks the **Agent Chat Protocol**. In an ASI:One chat you ask it to
-check a PR. It runs the **real** Merge Gate in-process (rules, `git blame` code owners, the test sandbox,
-`decide()`). It replies with the verdict, the evidence (rule ids and failing tests), the engineer the
-finding is routed to, and the `run_hash`. You also get an **ASI:One Interactive Card** with **Why** and
-**Block** buttons.
+check a PR. It runs the **real** Merge Gate by orchestrating four specialist uAgents. It replies with the
+verdict, the evidence (rule ids and failing tests), the engineer the finding is routed to, the `run_hash`,
+and which agent did each step. You also get an **ASI:One Interactive Card** with **Why** and **Block**
+buttons.
+
+## Architecture
+
+```
+ ASI:One chat
+     |  Agent Chat Protocol (mailbox via Agentverse)
+     v
+ +------------------------------+   StepRequest / StepResult (typed uAgents Models)
+ | merge-gate  (orchestrator)   |--------------------------------------------------+
+ |  ack, parse, reply, card     |---------------------------------+                |
+ |  verify(): decide() in code  |----------------+                |                |
+ +------------------------------+                |                |                |
+     |  in parallel                              |                |                |
+     v                                           v                v                v
+  Rules                                    OwnerRouter       TestWriter  --source-->  Sandbox
+  merge_gate.rules                         git blame +       Muse Spark writes        runs those tests
+  (deleted tests, ...)                     CODEOWNERS        spec-only tests          on base, then head
+```
+
+- All five agents run in one process (`uagents.Bureau`). Each has its own address, derived from
+  `MERGE_GATE_AGENT_SEED`. Only the orchestrator has `mailbox=True` and `publish_agent_details=True` and
+  faces ASI:One. The specialists only answer the orchestrator's address. A request carries a repo path and
+  test code to run, so requests from anyone else are refused.
+- The orchestrator fans out: Rules and OwnerRouter run in parallel with the TestWriter -> Sandbox chain.
+  Each call has a timeout (30 s; TestWriter 120 s; Sandbox 180 s) and one retry. If a specialist still
+  fails, the orchestrator runs that step in-process. The reply then says so, for example: "OwnerRouter agent
+  failed twice (Timeout waiting for response); ran that step in-process instead".
+- The verdict is never delegated. The specialists' results go into the same `merge_gate.verify()`
+  (`decide()`, summary, `run_hash`) through its `steps=` hook. A run through the agents therefore has the
+  same `run_hash` as an in-process run (tested).
+- TestWriter and Sandbox run when `MUSE_API_KEY` is set, the same rule `merge_gate demo` uses. Turn them off
+  with `MERGE_GATE_AGENT_LLM=0`.
+- SubQ routing (PR #4) lives inside `verify()` once it is merged, so it applies the same way here. OwnerRouter
+  does not call it a second time.
+
+A real run (local Bureau, a client agent chatting with the orchestrator, Muse Spark on):
+
+```
+BLOCK: demo-1
+A coding agent reworked your apply_discount code. A discount over 100 percent no longer comes out as free.
+Evidence:
+- [block] rule R1_DELETED_TEST: PR deletes test_discount_never_negative from tests/test_pricing.py (tests/test_pricing.py:8)
+- [block] failing test gate::test_invariant_over_discount_clamped: ... AssertionError: over 100 pct is free
+Routed to Peter <peter@example.com>, who wrote 5 of the changed lines.
+run_hash sha256:38a1a38d... (gate v1)
+Agents:
+- Rules agent: done in 126 ms
+- OwnerRouter agent: done in 153 ms
+- TestWriter agent: done in 26677 ms
+- Sandbox agent: done in 659 ms
+```
 
 Design rule: **a chat can stop a merge, never approve one.** `block` only records the block in the hash-chained
 run log (`runs/log.jsonl`). The agent has no approve path. It never sends an iMessage and never calls GitHub.
@@ -28,14 +79,17 @@ selections (`{"action": "why", "pr_id": "demo-1"}`) or as prose. The agent parse
 pip install -e ".[agent]"            # uagents==0.26.1, uagents-core==0.4.12
 export MERGE_GATE_AGENT_SEED="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 # keep that value: same seed = same agent address. Put it in .env (gitignored) to reuse it.
+# optional, turns on TestWriter + Sandbox: export MUSE_API_KEY (or: set -a; source secrets/.env; set +a)
 python -m agents.merge_gate_agent    # from the repo root
 ```
 
-The agent prints its address and an inspector link:
+It prints the specialists, then the orchestrator's address and inspector link:
 
 ```
-INFO: [merge-gate]: Starting agent with address: agent1q...
-INFO: [merge-gate]: Agent inspector available at https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8001&address=agent1q...
+[merge-gate] specialist merge-gate-rules: agent1q...
+...
+[merge-gate] orchestrator (ASI:One-facing): agent1q...
+[merge-gate] Agent inspector: https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A8001&address=agent1q...
 INFO: [merge-gate]: Manifest published successfully: AgentChatProtocol
 WARNING: [merge-gate]: Agent mailbox not found: create one using the agent inspector
 ```
@@ -48,14 +102,14 @@ On macOS with the python.org installer, you may see `SSL: CERTIFICATE_VERIFY_FAI
 
 Optional settings:
 - `MERGE_GATE_AGENT_PORT` (default 8001).
-- `MERGE_GATE_AGENT_LLM=1` adds Muse Spark's spec-only tests. It needs `MUSE_API_KEY` and makes runs slower.
+- `MERGE_GATE_AGENT_LLM=0` skips TestWriter and Sandbox. They are on by default when `MUSE_API_KEY` is set. They add about 30 s per verify.
 
 ## Register and test in ASI:One (you; needs your Agentverse login)
 
 These steps follow https://uagents.fetch.ai/docs/examples/asi-1.
 
 1. Keep the agent running. Sign in at https://agentverse.ai and https://asi1.ai in the same browser.
-2. Open the **Agent inspector** link from the log. Click **Connect**, choose **Mailbox**, and finish the prompts.
+2. Open the **Agent inspector** link from the log. Use the orchestrator's link; the specialists need no setup. Click **Connect**, choose **Mailbox**, and finish the prompts.
    The log should then show `Successfully registered as mailbox agent in Agentverse` and
    `Agent details updated in Agentverse`.
 3. In the inspector, click **Agent Profile**. On the Agentverse dashboard:
@@ -83,6 +137,12 @@ The agent must be running whenever someone chats with it. The mailbox holds mess
 pytest tests/test_fetch_agent.py
 ```
 
-The tests cover command parsing, reply and card formatting with the gate mocked, error replies, BLOCK
-records-only, and one in-process run of the real gate on demo-1 that must return BLOCK with R1. The
-test for the uagents wiring is skipped when `uagents` is not installed.
+The tests cover:
+- command parsing, and reply and card formatting, with the gate mocked
+- error replies, and BLOCK only recording the block
+- one in-process run of the real gate on demo-1, which must return BLOCK with R1
+- the five-agent build
+- fan-out with a flaky specialist (retry) and a dead one (in-process fallback, same `run_hash`)
+- the TestWriter -> Sandbox chain
+
+The tests that need `uagents` are skipped when it is not installed.
