@@ -124,6 +124,21 @@ ALLOWED_ORIGINS = {
 } | {o.strip() for o in os.environ.get("MERGE_GATE_ORIGINS", "").split(",") if o.strip()}
 
 
+def _teach_or_forget(state: State, phone: str, r: VerdictReport, note: str, kind: str) -> None:
+    """A verified owner's TEACH or FORGET from the webhook; texts the outcome back."""
+    if kind == "teach":  # Muse + two sandbox runs: answer the webhook now, text the outcome after
+        def teach() -> None:
+            try:
+                text = state.teach(r, note)
+            except Exception as e:  # noqa: BLE001 - tell the owner instead of dying silently in a thread
+                text = f"Couldn't learn that: {e}"
+            state.notifier.send(phone, text)
+
+        threading.Thread(target=teach, daemon=True).start()
+    if kind == "forget":
+        state.notifier.send(phone, state.forget(r, note))
+
+
 def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def _origin_ok(self) -> bool:
@@ -252,17 +267,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 blocked = True
             if action.text:
                 state.notifier.send(inbound.phone, action.text)
-            if action.kind == "teach":  # Muse + two sandbox runs: answer the webhook now, text the outcome after
-                def teach() -> None:
-                    try:
-                        text = state.teach(r, reply.note)
-                    except Exception as e:  # noqa: BLE001 - tell the owner instead of dying silently in a thread
-                        text = f"Couldn't learn that: {e}"
-                    state.notifier.send(inbound.phone, text)
-
-                threading.Thread(target=teach, daemon=True).start()
-            if action.kind == "forget":
-                state.notifier.send(inbound.phone, state.forget(r, reply.note))
+            _teach_or_forget(state, inbound.phone, r, reply.note, action.kind)
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 

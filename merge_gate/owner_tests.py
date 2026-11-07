@@ -111,32 +111,41 @@ def _sha(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
-def rule_to_test(pr: PullRequest, owner: str, sentence: str, timeout_s: int = 60, dir_: str | None = None) -> OwnerTest:
-    """Owner's sentence -> one validated pytest test, stored under that owner's name if it holds on base."""
-    t = OwnerTest(owner=owner, sentence=sentence.strip(), pr_id=pr.pr_id, files=_source_files(pr))
-    if not t.sentence:
-        t.reason = "the message is empty"
-        return t
+def _generate_test(pr: PullRequest, t: OwnerTest) -> str | None:
+    """Muse writes ONE test for t.sentence from the public interface only. Sets t.test_name/t.source, or t.reason
+    and returns None."""
     interface = public_interface(pr)
     if not interface:
         t.reason = "the PR changes no module with a public interface to test"
-        return t
+        return None
     user = f"RULE (from the code owner)\n{t.sentence}\n\nPUBLIC INTERFACE\n```python\n{interface}\n```"
     try:
         code = _extract_code(llm.complete(DEVELOPER_PROMPT, user))
         names = _test_names(code)
     except llm.LLMError as e:
         t.reason = f"Muse Spark is unavailable ({e})"
-        return t
+        return None
     except SyntaxError:
         t.reason = "the generated test doesn't parse"
-        return t
+        return None
     if not names:
         t.reason = "the generated code has no test function"
-        return t
+        return None
     if len(names) > 1:  # one sentence, one test
         code = _drop_tests(code, set(names[1:]))
     t.test_name, t.source = names[0], code
+    return code
+
+
+def rule_to_test(pr: PullRequest, owner: str, sentence: str, timeout_s: int = 60, dir_: str | None = None) -> OwnerTest:
+    """Owner's sentence -> one validated pytest test, stored under that owner's name if it holds on base."""
+    t = OwnerTest(owner=owner, sentence=sentence.strip(), pr_id=pr.pr_id, files=_source_files(pr))
+    if not t.sentence:
+        t.reason = "the message is empty"
+        return t
+    code = _generate_test(pr, t)
+    if code is None:
+        return t
     t.id = f"{owner_key(owner)}/{t.test_name}_{_sha(t.sentence)[:8]}"
 
     sandbox_name = os.path.basename(t.id) + ".py"

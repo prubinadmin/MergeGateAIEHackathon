@@ -77,17 +77,27 @@ def parse_reply(text: str) -> Reply:
     if not words:
         return Reply("UNKNOWN", text)
     first = words[0].upper().strip(".!,?:")
-    if words[0].upper().startswith("RULE:") or first == "RULE":  # explicit: always teaches
-        note = norm.strip()[4:].lstrip(": ").strip()
-        return Reply("TEACH", text, note) if note else Reply("UNKNOWN", text)
+    if words[0].upper().startswith("RULE:") or first == "RULE":
+        return _explicit_rule(text, norm)
     if first == "FALSE" and len(words) > 1 and words[1].upper().strip(".!,?") == "ALARM":
         return Reply("FALSE_ALARM", text, " ".join(words[2:]))
     cmd = _ALIASES.get(first)
     if cmd and cmd != "OK":
         return Reply(cmd, text, " ".join(words[1:]))
+    return _free_text(text, norm, words, cmd == "OK")
+
+
+def _explicit_rule(text: str, norm: str) -> Reply:
+    """RULE: <sentence> always teaches (an empty one is UNKNOWN)."""
+    note = norm.strip()[4:].lstrip(": ").strip()
+    return Reply("TEACH", text, note) if note else Reply("UNKNOWN", text)
+
+
+def _free_text(text: str, norm: str, words: list[str], is_ok: bool) -> Reply:
+    """OK or no command word: stop wording wins (BLOCK), then OK, then rule-shaped text (TEACH)."""
     if _BLOCK_INTENT.search(norm):
         return Reply("BLOCK", text, norm.strip())
-    if cmd == "OK":
+    if is_ok:
         return Reply("OK", text, " ".join(words[1:]))
     if _RULE_WORDS.search(norm):
         return Reply("TEACH", text, norm.strip())

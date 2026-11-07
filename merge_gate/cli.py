@@ -71,6 +71,22 @@ def _load_report(path: str) -> VerdictReport:
         return VerdictReport.from_dict(json.load(f))
 
 
+def _cmd_owner_tests(args: argparse.Namespace) -> int:
+    from . import owner_tests
+
+    if args.action == "list":
+        for e in owner_tests.load_registry():
+            print(f'{e.get("id") or e["file"]}  {e["owner"]}  "{e["sentence"]}"')
+        return 0
+    if not args.id:
+        print("owner-tests remove needs an id (see owner-tests list)", file=sys.stderr)
+        return 2
+    gone = owner_tests.remove(args.id)
+    for e in gone:
+        print(f'removed {e.get("id") or e["file"]}  "{e["sentence"]}"')
+    return 0 if gone else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="merge-gate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -125,19 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if args.cmd == "owner-tests":
-        from . import owner_tests
-
-        if args.action == "list":
-            for e in owner_tests.load_registry():
-                print(f'{e.get("id") or e["file"]}  {e["owner"]}  "{e["sentence"]}"')
-            return 0
-        if not args.id:
-            print("owner-tests remove needs an id (see owner-tests list)", file=sys.stderr)
-            return 2
-        gone = owner_tests.remove(args.id)
-        for e in gone:
-            print(f'removed {e.get("id") or e["file"]}  "{e["sentence"]}"')
-        return 0 if gone else 1
+        return _cmd_owner_tests(args)
 
     if args.cmd == "verify":
         if args.stub:
