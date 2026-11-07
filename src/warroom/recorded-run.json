@@ -1,0 +1,550 @@
+{
+ "recorded_at": "2026-11-07T22:05:06+00:00",
+ "health": {
+  "ok": true,
+  "llm": true
+ },
+ "demo": [
+  {
+   "pr_id": "demo-1",
+   "title": "Speed up apply_discount",
+   "issue_text": "apply_discount is a hot path in bulk checkout. Make it faster without changing results.",
+   "opened_by": "A coding agent",
+   "files": [
+    "shop/pricing.py",
+    "tests/test_pricing.py"
+   ],
+   "diff": "diff --git a/shop/pricing.py b/shop/pricing.py\nindex 6b29627..9373419 100644\n--- a/shop/pricing.py\n+++ b/shop/pricing.py\n@@ -4,7 +4,7 @@ def apply_discount(price: float, pct: float) -> float:\n     pct is a percentage (10 means 10% off). The result is never below zero,\n     so a discount of 100% or more makes the item free, not negative.\n     \"\"\"\n-    return max(0.0, price * (1 - pct / 100))\n+    return price * (1 - pct / 100)\n \n \n def bulk_price(prices: list[float], pct: float) -> float:\ndiff --git a/tests/test_pricing.py b/tests/test_pricing.py\nindex 9a7dc18..644488b 100644\n--- a/tests/test_pricing.py\n+++ b/tests/test_pricing.py\n@@ -5,9 +5,5 @@ def test_basic_discount():\n     assert apply_discount(100, 10) == 90\n \n \n-def test_discount_never_negative():\n-    assert apply_discount(10, 150) == 0.0\n-\n-\n def test_bulk():\n     assert bulk_price([10, 20], 50) == 15.0\n"
+  },
+  {
+   "pr_id": "demo-2",
+   "title": "Simplify order lookup",
+   "issue_text": "find_orders is hard to read. Simplify it. Behaviour must not change.",
+   "opened_by": "An outside contributor",
+   "files": [
+    "shop/orders.py",
+    "tests/test_orders.py"
+   ],
+   "diff": "diff --git a/shop/orders.py b/shop/orders.py\nindex 0269ccc..c6f1936 100644\n--- a/shop/orders.py\n+++ b/shop/orders.py\n@@ -1,6 +1,6 @@\n def find_orders(cur, customer: str) -> list:\n     \"\"\"All orders for one customer, newest first.\"\"\"\n-    cur.execute(\"SELECT id, total FROM orders WHERE customer = ? ORDER BY id DESC\", (customer,))\n+    cur.execute(f\"SELECT id, total FROM orders WHERE customer = '{customer}' ORDER BY id DESC\")\n     return cur.fetchall()\n \n \ndiff --git a/tests/test_orders.py b/tests/test_orders.py\nindex 768a4cd..e61086f 100644\n--- a/tests/test_orders.py\n+++ b/tests/test_orders.py\n@@ -5,7 +5,6 @@ from shop.orders import order_total\n \n def test_total():\n     assert order_total([(2.5, 2), (1.0, 3)]) == 8.0\n-    assert order_total([]) == 0.0\n \n \n def test_rejects_zero_quantity():\n"
+  },
+  {
+   "pr_id": "demo-3",
+   "title": "Use sum() in cart_count",
+   "issue_text": "Refactor cart_count to use sum(). No behaviour change.",
+   "opened_by": "An outside contributor",
+   "files": [
+    "shop/cart.py"
+   ],
+   "diff": "diff --git a/shop/cart.py b/shop/cart.py\nindex 33c7257..db0fb96 100644\n--- a/shop/cart.py\n+++ b/shop/cart.py\n@@ -1,6 +1,3 @@\n def cart_count(items: list[tuple[str, int]]) -> int:\n     \"\"\"Number of units in the cart (sum of quantities).\"\"\"\n-    n = 0\n-    for _, qty in items:\n-        n += qty\n-    return n\n+    return sum(qty for _, qty in items)\n"
+  }
+ ],
+ "stats": {
+  "checked": 6,
+  "blocked": 5,
+  "review": 0,
+  "passed": 1,
+  "owner_replies": 0,
+  "owner_blocks": 0,
+  "median_ms": 13521,
+  "events": 6,
+  "chain_ok": true,
+  "llm": true
+ },
+ "runs": {
+  "demo-1": [
+   {
+    "type": "begin",
+    "pr_id": "demo-1",
+    "llm": true,
+    "t": 0.0
+   },
+   {
+    "type": "stage",
+    "stage": "rules",
+    "status": "start",
+    "t": 0.0
+   },
+   {
+    "type": "stage",
+    "stage": "rules",
+    "status": "done",
+    "ms": 101,
+    "evidence": [
+     {
+      "type": "rule",
+      "id": "R1_DELETED_TEST",
+      "detail": "PR deletes test_discount_never_negative from tests/test_pricing.py",
+      "file": "tests/test_pricing.py",
+      "line": 8,
+      "severity": "block"
+     }
+    ],
+    "t": 0.1
+   },
+   {
+    "type": "stage",
+    "stage": "owners",
+    "status": "start",
+    "t": 0.1
+   },
+   {
+    "type": "stage",
+    "stage": "owners",
+    "status": "done",
+    "ms": 116,
+    "owners": [
+     {
+      "name": "Peter",
+      "email": "peter@example.com",
+      "lines": 5,
+      "last_touched": "2026-11-07",
+      "score": 1.0
+     }
+    ],
+    "t": 0.22
+   },
+   {
+    "type": "stage",
+    "stage": "testgen",
+    "status": "start",
+    "t": 0.22
+   },
+   {
+    "type": "stage",
+    "stage": "testgen",
+    "status": "done",
+    "ms": 663,
+    "error": "",
+    "source": "import pytest\n\n\ndef test_invariant_basic_ten_percent():\n    from shop.pricing import apply_discount\n    assert apply_discount(100.0, 10.0) == pytest.approx(90.0), \"10% off 100 is 90\"\n\n\ndef test_invariant_zero_pct_unchanged():\n    from shop.pricing import apply_discount\n    assert apply_discount(50.0, 0.0) == pytest.approx(50.0), \"0% leaves price unchanged\"\n\n\ndef test_invariant_zero_price_stays_zero():\n    from shop.pricing import apply_discount\n    assert apply_discount(0.0, 10.0) == pytest.approx(0.0), \"zero price stays zero\"\n\n\ndef test_invariant_hundred_pct_free():\n    from shop.pricing import apply_discount\n    assert apply_discount(50.0, 100.0) == pytest.approx(0.0), \"100% off is free\"\n\n\ndef test_invariant_over_hundred_clamped_to_zero():\n    from shop.pricing import apply_discount\n    assert apply_discount(50.0, 150.0) == pytest.approx(0.0), \"over 100% is free not negative\"\n\n\ndef test_invariant_very_large_price():\n    from shop.pricing import apply_discount\n    assert apply_discount(1e12, 10.0) == pytest.approx(9e11), \"large price discounts proportionally\"\n\n\ndef test_invariant_bulk_empty_total_zero():\n    from shop.pricing import bulk_price\n    assert bulk_price([], 10.0) == pytest.approx(0.0), \"empty bulk total is zero\"\n\n\ndef test_invariant_bulk_total_matches_discounts():\n    from shop.pricing import bulk_price\n    assert bulk_price([10.0, 20.0], 10.0) == pytest.approx(27.0), \"bulk sums discounted prices\"\n\n\ndef test_invariant_bulk_over_hundred_free():\n    from shop.pricing import bulk_price\n    assert bulk_price([10.0, 20.0], 200.0) == pytest.approx(0.0), \"bulk over 100% is free\"\n\n\ndef test_invariant_bulk_rounded_to_cents():\n    from shop.pricing import bulk_price\n    assert bulk_price([1.111, 2.222], 0.0) == pytest.approx(3.33), \"bulk total rounded to cents\"\n",
+    "kept": [
+     "test_invariant_basic_ten_percent",
+     "test_invariant_zero_pct_unchanged",
+     "test_invariant_zero_price_stays_zero",
+     "test_invariant_hundred_pct_free",
+     "test_invariant_over_hundred_clamped_to_zero",
+     "test_invariant_very_large_price",
+     "test_invariant_bulk_empty_total_zero",
+     "test_invariant_bulk_total_matches_discounts",
+     "test_invariant_bulk_over_hundred_free",
+     "test_invariant_bulk_rounded_to_cents"
+    ],
+    "dropped": [],
+    "base": {
+     "passed": 10,
+     "failed": 0,
+     "hash": "sha256:065e831c36e735ed51ad1ebc1ae37b65ec714b3dc22733a230373b6d300efbbd"
+    },
+    "head": {
+     "passed": 8,
+     "failed": 2,
+     "hash": "sha256:09f3f9a2f074e2ceda386a7adbd352b914cb37fbd1d261d77585eb66cb4704f3"
+    },
+    "evidence": [
+     {
+      "type": "failing_test",
+      "id": "gate::test_invariant_over_hundred_clamped_to_zero",
+      "detail": "test_invariant_over_hundred_clamped_to_zero: AssertionError: over 100% is free not negative",
+      "file": null,
+      "line": null,
+      "severity": "block"
+     },
+     {
+      "type": "failing_test",
+      "id": "gate::test_invariant_bulk_over_hundred_free",
+      "detail": "test_invariant_bulk_over_hundred_free: AssertionError: bulk over 100% is free",
+      "file": null,
+      "line": null,
+      "severity": "block"
+     }
+    ],
+    "t": 0.88
+   },
+   {
+    "type": "stage",
+    "stage": "decide",
+    "status": "done",
+    "ms": 0,
+    "verdict": "BLOCK",
+    "gate_version": "v1",
+    "t": 0.88
+   },
+   {
+    "type": "stage",
+    "stage": "summary",
+    "status": "start",
+    "t": 0.88
+   },
+   {
+    "type": "stage",
+    "stage": "summary",
+    "status": "done",
+    "ms": 14,
+    "summary": "A coding agent changed your discount code. A discount over 100% now goes negative instead of staying free.",
+    "t": 0.9
+   },
+   {
+    "type": "report",
+    "report": {
+     "pr_id": "demo-1",
+     "verdict": "BLOCK",
+     "evidence": [
+      {
+       "type": "rule",
+       "id": "R1_DELETED_TEST",
+       "detail": "PR deletes test_discount_never_negative from tests/test_pricing.py",
+       "file": "tests/test_pricing.py",
+       "line": 8,
+       "severity": "block"
+      },
+      {
+       "type": "failing_test",
+       "id": "gate::test_invariant_over_hundred_clamped_to_zero",
+       "detail": "test_invariant_over_hundred_clamped_to_zero: AssertionError: over 100% is free not negative",
+       "file": null,
+       "line": null,
+       "severity": "block"
+      },
+      {
+       "type": "failing_test",
+       "id": "gate::test_invariant_bulk_over_hundred_free",
+       "detail": "test_invariant_bulk_over_hundred_free: AssertionError: bulk over 100% is free",
+       "file": null,
+       "line": null,
+       "severity": "block"
+      }
+     ],
+     "owners": [
+      {
+       "name": "Peter",
+       "email": "peter@example.com",
+       "lines": 5,
+       "last_touched": "2026-11-07",
+       "score": 1.0
+      }
+     ],
+     "summary": "A coding agent changed your discount code. A discount over 100% now goes negative instead of staying free.",
+     "run_hash": "sha256:8a9d92abaeb95825854b619c417869d029a868527bb46f4a722f2f9d75c2c8d0",
+     "gate_version": "v1"
+    },
+    "chain_ok": true,
+    "t": 2.16
+   }
+  ],
+  "demo-2": [
+   {
+    "type": "begin",
+    "pr_id": "demo-2",
+    "llm": true,
+    "t": 0.0
+   },
+   {
+    "type": "stage",
+    "stage": "rules",
+    "status": "start",
+    "t": 0.0
+   },
+   {
+    "type": "stage",
+    "stage": "rules",
+    "status": "done",
+    "ms": 122,
+    "evidence": [
+     {
+      "type": "rule",
+      "id": "R3_WEAKENED_ASSERT",
+      "detail": "test_total in tests/test_orders.py went from 2 asserts to 1",
+      "file": "tests/test_orders.py",
+      "line": 6,
+      "severity": "block"
+     },
+     {
+      "type": "rule",
+      "id": "R7_DANGEROUS_CALL",
+      "detail": "shop/orders.py:3 adds SQL built from a string instead of query parameters",
+      "file": "shop/orders.py",
+      "line": 3,
+      "severity": "block"
+     }
+    ],
+    "t": 0.12
+   },
+   {
+    "type": "stage",
+    "stage": "owners",
+    "status": "start",
+    "t": 0.12
+   },
+   {
+    "type": "stage",
+    "stage": "owners",
+    "status": "done",
+    "ms": 106,
+    "owners": [
+     {
+      "name": "TAAZ",
+      "email": "taaz@example.com",
+      "lines": 2,
+      "last_touched": "2026-11-07",
+      "score": 1.0
+     }
+    ],
+    "t": 0.23
+   },
+   {
+    "type": "stage",
+    "stage": "testgen",
+    "status": "start",
+    "t": 0.23
+   },
+   {
+    "type": "stage",
+    "stage": "testgen",
+    "status": "done",
+    "ms": 100971,
+    "error": "",
+    "source": "import sqlite3\n\nimport pytest\n\n\ndef test_invariant_order_total_empty():\n    from shop.orders import order_total\n    assert order_total([]) == pytest.approx(0), \"empty list totals 0\"\n\n\ndef test_invariant_order_total_single():\n    from shop.orders import order_total\n    assert order_total([(2.5, 2)]) == pytest.approx(5.0), \"single line price*qty\"\n\n\ndef test_invariant_order_total_many():\n    from shop.orders import order_total\n    assert order_total([(1.0, 1), (2.0, 3), (0.5, 4)]) == pytest.approx(9.0), \"sum of lines\"\n\n\ndef test_invariant_order_total_zero_quantity_raises():\n    from shop.orders import order_total\n    with pytest.raises(ValueError):\n        assert order_total([(1.0, 0)]), \"zero qty must raise\"\n\n\ndef test_invariant_order_total_negative_quantity_raises():\n    from shop.orders import order_total\n    with pytest.raises(ValueError):\n        assert order_total([(1.0, -2)]), \"negative qty must raise\"\n\n\ndef test_invariant_order_total_large():\n    from shop.orders import order_total\n    assert order_total([(1e9, 1000000)]) == pytest.approx(1e15), \"very large total\"\n\n\ndef test_invariant_find_orders_empty_for_unknown():\n    from shop.orders import find_orders\n    con = sqlite3.connect(\":memory:\")\n    cur = con.cursor()\n    cur.execute(\"CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, customer TEXT, customer_name TEXT, name TEXT, total REAL, amount REAL, price REAL, created INTEGER, created_at INTEGER, date INTEGER, timestamp INTEGER)\")\n    cur.execute(\"INSERT INTO orders (customer, customer_name, name, total, amount, price, created, created_at, date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\", (\"alice\", \"alice\", \"alice\", 10.0, 10.0, 10.0, 1, 1, 1, 1))\n    con.commit()\n    res = find_orders(cur, \"nobody-xyz\")\n    con.close()\n    assert res == [], \"unknown customer gives empty list\"\n\n\ndef test_invariant_find_orders_filters_customer():\n    from shop.orders import find_orders\n    con = sqlite3.connect(\":memory:\")\n    cur = con.cursor()\n    cur.execute(\"CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, customer TEXT, customer_name TEXT, name TEXT, total REAL, amount REAL, price REAL, created INTEGER, created_at INTEGER, date INTEGER, timestamp INTEGER)\")\n    cur.execute(\"INSERT INTO orders (customer, customer_name, name, total, amount, price, created, created_at, date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\", (\"alice\", \"alice\", \"alice\", 10.0, 10.0, 10.0, 1, 1, 1, 1))\n    cur.execute(\"INSERT INTO orders (customer, customer_name, name, total, amount, price, created, created_at, date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\", (\"bob\", \"bob\", \"bob\", 99.0, 99.0, 99.0, 2, 2, 2, 2))\n    cur.execute(\"INSERT INTO orders (customer, customer_name, name, total, amount, price, created, created_at, date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\", (\"alice\", \"alice\", \"alice\", 20.0, 20.0, 20.0, 3, 3, 3, 3))\n    con.commit()\n    res = find_orders(cur, \"alice\")\n    con.close()\n    assert len(res) == 2, \"only requested customer orders\"\n\n\ndef test_invariant_find_orders_newest_first():\n    from shop.orders import find_orders\n    con = sqlite3.connect(\":memory:\")\n    cur = con.cursor()\n    cur.execute(\"CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, customer TEXT, customer_name TEXT, name TEXT, total REAL, amount REAL, price REAL, created INTEGER, created_at INTEGER, date INTEGER, timestamp INTEGER)\")\n    cur.execute(\"INSERT INTO orders (customer, customer_name, name, total, amount, price, created, created_at, date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\", (\"alice\", \"alice\", \"alice\", 10.0, 10.0, 10.0, 1, 1, 1, 1))\n    cur.execute(\"INSERT INTO orders (customer, customer_name, name, total, amount, price, created, created_at, date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\", (\"alice\", \"alice\", \"alice\", 20.0, 20.0, 20.0, 2, 2, 2, 2))\n    cur.execute(\"INSERT INTO orders (customer, customer_name, name, total, amount, price, created, created_at, date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\", (\"alice\", \"alice\", \"alice\", 30.0, 30.0, 30.0, 3, 3, 3, 3))\n    con.commit()\n    res = find_orders(cur, \"alice\")\n    con.close()\n    assert len(res) == 3 and \"30\" in str(tuple(res[0])) and \"10\" in str(tuple(res[2])), \"newest first\"\n",
+    "kept": [
+     "test_invariant_order_total_empty",
+     "test_invariant_order_total_single",
+     "test_invariant_order_total_many",
+     "test_invariant_order_total_zero_quantity_raises",
+     "test_invariant_order_total_negative_quantity_raises",
+     "test_invariant_order_total_large",
+     "test_invariant_find_orders_empty_for_unknown",
+     "test_invariant_find_orders_filters_customer",
+     "test_invariant_find_orders_newest_first"
+    ],
+    "dropped": [],
+    "base": {
+     "passed": 9,
+     "failed": 0,
+     "hash": "sha256:bce73114d65e3b7b2d889085b1a05d369c20ea98e3c5449d60f3e0a671ad0a90"
+    },
+    "head": {
+     "passed": 9,
+     "failed": 0,
+     "hash": "sha256:c3b2e4332bd4d0154fbc37bfd1779d79a65f3ba85e6b37440316eb20e150bcf0"
+    },
+    "evidence": [],
+    "t": 101.2
+   },
+   {
+    "type": "stage",
+    "stage": "decide",
+    "status": "done",
+    "ms": 0,
+    "verdict": "BLOCK",
+    "gate_version": "v1",
+    "t": 101.2
+   },
+   {
+    "type": "stage",
+    "stage": "summary",
+    "status": "start",
+    "t": 101.2
+   },
+   {
+    "type": "stage",
+    "stage": "summary",
+    "status": "done",
+    "ms": 8348,
+    "summary": "An outside contributor changed your order lookup code. It now builds SQL from a string instead of query parameters.",
+    "t": 109.55
+   },
+   {
+    "type": "report",
+    "report": {
+     "pr_id": "demo-2",
+     "verdict": "BLOCK",
+     "evidence": [
+      {
+       "type": "rule",
+       "id": "R3_WEAKENED_ASSERT",
+       "detail": "test_total in tests/test_orders.py went from 2 asserts to 1",
+       "file": "tests/test_orders.py",
+       "line": 6,
+       "severity": "block"
+      },
+      {
+       "type": "rule",
+       "id": "R7_DANGEROUS_CALL",
+       "detail": "shop/orders.py:3 adds SQL built from a string instead of query parameters",
+       "file": "shop/orders.py",
+       "line": 3,
+       "severity": "block"
+      }
+     ],
+     "owners": [
+      {
+       "name": "TAAZ",
+       "email": "taaz@example.com",
+       "lines": 2,
+       "last_touched": "2026-11-07",
+       "score": 1.0
+      }
+     ],
+     "summary": "An outside contributor changed your order lookup code. It now builds SQL from a string instead of query parameters.",
+     "run_hash": "sha256:033a7409304fd5b838a698c7eb8b2092217bbbb989e3776efb56e8ee05bde9ca",
+     "gate_version": "v1"
+    },
+    "chain_ok": true,
+    "t": 110.89
+   }
+  ],
+  "demo-3": [
+   {
+    "type": "begin",
+    "pr_id": "demo-3",
+    "llm": true,
+    "t": 0.0
+   },
+   {
+    "type": "stage",
+    "stage": "rules",
+    "status": "start",
+    "t": 0.0
+   },
+   {
+    "type": "stage",
+    "stage": "rules",
+    "status": "done",
+    "ms": 98,
+    "evidence": [],
+    "t": 0.1
+   },
+   {
+    "type": "stage",
+    "stage": "owners",
+    "status": "start",
+    "t": 0.1
+   },
+   {
+    "type": "stage",
+    "stage": "owners",
+    "status": "done",
+    "ms": 103,
+    "owners": [
+     {
+      "name": "Michael",
+      "email": "michael@example.com",
+      "lines": 4,
+      "last_touched": "2026-11-07",
+      "score": 1.0
+     }
+    ],
+    "t": 0.2
+   },
+   {
+    "type": "stage",
+    "stage": "testgen",
+    "status": "start",
+    "t": 0.2
+   },
+   {
+    "type": "stage",
+    "stage": "testgen",
+    "status": "done",
+    "ms": 13627,
+    "error": "",
+    "source": "def test_invariant_empty_cart():\n    from shop.cart import cart_count\n    assert cart_count([]) == 0, \"empty cart has 0 units\"\n\n\ndef test_invariant_single_item():\n    from shop.cart import cart_count\n    assert cart_count([(\"apple\", 2)]) == 2, \"single item returns its quantity\"\n\n\ndef test_invariant_multiple_items_sum():\n    from shop.cart import cart_count\n    assert cart_count([(\"apple\", 1), (\"banana\", 3), (\"cherry\", 2)]) == 6, \"quantities are summed\"\n\n\ndef test_invariant_zero_quantities():\n    from shop.cart import cart_count\n    assert cart_count([(\"apple\", 0), (\"banana\", 5), (\"cherry\", 0)]) == 5, \"zero quantities contribute 0\"\n\n\ndef test_invariant_very_large_quantities():\n    from shop.cart import cart_count\n    assert cart_count([(\"apple\", 10**9), (\"banana\", 10**9)]) == 2 * 10**9, \"large quantities sum exactly\"\n",
+    "kept": [
+     "test_invariant_empty_cart",
+     "test_invariant_single_item",
+     "test_invariant_multiple_items_sum",
+     "test_invariant_zero_quantities",
+     "test_invariant_very_large_quantities"
+    ],
+    "dropped": [],
+    "base": {
+     "passed": 5,
+     "failed": 0,
+     "hash": "sha256:acfdaaa8ea7846ca4e197111aba571410fa2a64dc63a3ac7ac56269578460005"
+    },
+    "head": {
+     "passed": 5,
+     "failed": 0,
+     "hash": "sha256:12a5830e54ece38728fcd64d9f9afc8b4ed9851af1d6e71cf5f307ecb7da9214"
+    },
+    "evidence": [],
+    "t": 13.83
+   },
+   {
+    "type": "stage",
+    "stage": "decide",
+    "status": "done",
+    "ms": 0,
+    "verdict": "PASS",
+    "gate_version": "v1",
+    "t": 13.83
+   },
+   {
+    "type": "stage",
+    "stage": "summary",
+    "status": "start",
+    "t": 13.83
+   },
+   {
+    "type": "stage",
+    "stage": "summary",
+    "status": "done",
+    "ms": 12317,
+    "summary": "An outside contributor changed your cart count function.",
+    "t": 26.15
+   },
+   {
+    "type": "report",
+    "report": {
+     "pr_id": "demo-3",
+     "verdict": "PASS",
+     "evidence": [],
+     "owners": [
+      {
+       "name": "Michael",
+       "email": "michael@example.com",
+       "lines": 4,
+       "last_touched": "2026-11-07",
+       "score": 1.0
+      }
+     ],
+     "summary": "An outside contributor changed your cart count function.",
+     "run_hash": "sha256:0e5dcc8eaacd69e0ea7b42cabeb2723be44173c0a999f9ff3d3ae5d32bc29fb6",
+     "gate_version": "v1"
+    },
+    "chain_ok": true,
+    "t": 26.99
+   }
+  ]
+ },
+ "messages": {
+  "demo-1": {
+   "to": {
+    "name": "Peter",
+    "email": "peter@example.com",
+    "lines": 5,
+    "last_touched": "2026-11-07",
+    "score": 1.0
+   },
+   "text": "Merge Gate BLOCKED a PR on your code (demo-1).\nHi Peter: A coding agent changed your discount code. A discount over 100% now goes negative instead of staying free.\n- PR deletes test_discount_never_negative from tests/test_pricing.py\n- test_invariant_over_hundred_clamped_to_zero: AssertionError: over 100% is free not negative\nReply BLOCK, WHY, OK or FALSE ALARM."
+  },
+  "demo-2": {
+   "to": {
+    "name": "TAAZ",
+    "email": "taaz@example.com",
+    "lines": 2,
+    "last_touched": "2026-11-07",
+    "score": 1.0
+   },
+   "text": "Merge Gate BLOCKED a PR on your code (demo-2).\nHi TAAZ: An outside contributor changed your order lookup code. It now builds SQL from a string instead of query parameters.\n- test_total in tests/test_orders.py went from 2 asserts to 1\n- shop/orders.py:3 adds SQL built from a string instead of query parameters\nReply BLOCK, WHY, OK or FALSE ALARM."
+  },
+  "demo-3": {
+   "to": {
+    "name": "Michael",
+    "email": "michael@example.com",
+    "lines": 4,
+    "last_touched": "2026-11-07",
+    "score": 1.0
+   },
+   "text": "FYI: a PR touched your code and passed (demo-3).\nHi Michael: An outside contributor changed your cart count function."
+  }
+ }
+}

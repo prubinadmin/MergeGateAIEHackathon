@@ -3,8 +3,8 @@ import { ChevronRight, CircleCheck, GitPullRequest, Hash, Loader2, Lock, Play, S
 import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
-  API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, runGate,
+  API_BASE, DemoPr, Evidence, RECORDED_AT, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, replayMode, runGate,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -45,11 +45,11 @@ const verdictColor = (v?: string) =>
 const sevChip = (e: Evidence) =>
   e.severity === 'block' ? 'bg-red-500/15 text-red-300 border-red-500/40' : 'bg-sky-500/15 text-sky-300 border-sky-500/40';
 
-function StatsBar({ stats, llm }: { stats: Stats | null; llm: boolean | null }) {
+function StatsBar({ stats, llm, recorded }: { stats: Stats | null; llm: boolean | null; recorded: boolean }) {
   const n = (v: number | undefined | null) => (v === undefined || v === null ? '–' : v);
   return (
     <div className="mx-6 mt-4 rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-3 flex flex-wrap items-center gap-x-7 gap-y-2 text-[13px] tabular-nums">
-      <span className="flex items-center gap-2 font-mono text-[12px] text-amber-400"><span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />LIVE</span>
+      <span className="flex items-center gap-2 font-mono text-[12px] text-amber-400"><span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />{recorded ? 'RECORDED' : 'LIVE'}</span>
       <span><b className="text-lg text-zinc-100 mr-1.5">{n(stats?.checked)}</b><span className="text-zinc-400">PRs checked</span></span>
       <span><b className="text-lg text-red-400 mr-1.5">{n(stats?.blocked)}</b><span className="text-zinc-400">blocked</span></span>
       <span><b className="text-lg text-zinc-100 mr-1.5">{n(stats?.owner_blocks)}</b><span className="text-zinc-400">blocked from a phone</span></span>
@@ -141,6 +141,7 @@ export default function WarRoom() {
   const [llm, setLlm] = useState<boolean | null>(null);
   const [useLlm, setUseLlm] = useState<boolean>(true);
   const [apiDown, setApiDown] = useState('');
+  const [recorded, setRecorded] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showWhy, setShowWhy] = useState(true);
   const [replyBusy, setReplyBusy] = useState(false);
@@ -153,7 +154,7 @@ export default function WarRoom() {
 
   useEffect(() => {
     getHealth()
-      .then((h) => { setLlm(h.llm); setUseLlm(h.llm); return getDemo(); })
+      .then((h) => { setRecorded(replayMode()); setLlm(h.llm); setUseLlm(h.llm); return getDemo(); })
       .then((d) => { setPrs(d); setSel(d[0]?.pr_id || ''); })
       .catch(() => setApiDown(`Cannot reach the Merge Gate API at ${API_BASE}. Start it with: python -m merge_gate serve`));
     refreshStats();
@@ -233,8 +234,10 @@ export default function WarRoom() {
 
   return (
     <div className="flex-1 bg-[#0a0a0b] text-zinc-100">
-      {apiDown && <div className="bg-red-950/60 border-b border-red-900 px-6 py-2 text-[13px] text-red-200 font-mono">{apiDown}</div>}
-      <StatsBar stats={stats} llm={llm} />
+      {recorded
+        ? <div className="bg-zinc-900/60 border-b border-zinc-800 px-6 py-2 text-[13px] text-zinc-300 font-mono">Recorded run of the real gate (captured {new Date(RECORDED_AT).toLocaleString()}). Run `python -m merge_gate serve` for live runs.</div>
+        : apiDown && <div className="bg-red-950/60 border-b border-red-900 px-6 py-2 text-[13px] text-red-200 font-mono">{apiDown}</div>}
+      <StatsBar stats={stats} llm={llm} recorded={recorded} />
 
       <div className="mx-6 mt-3 rounded-xl border border-zinc-800 bg-zinc-950">
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
@@ -441,7 +444,7 @@ export default function WarRoom() {
         </div>
       </div>
       <div className="px-6 py-4 font-mono text-[11px] text-zinc-600 flex items-center gap-2">
-        <ShieldCheck size={12} /> Every lane above is a real stage of `python -m merge_gate` streamed from {API_BASE}. Nothing on this page is simulated.
+        <ShieldCheck size={12} /> Every lane above is a real stage of `python -m merge_gate` {recorded ? 'recorded from' : 'streamed from'} {API_BASE}. {recorded ? 'This is a recording of real gate runs.' : 'Nothing on this page is simulated.'}
       </div>
     </div>
   );
