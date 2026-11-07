@@ -455,7 +455,7 @@ export default function WarRoom() {
                   : auto?.status === 'start' ? 'sending'
                   : auto?.status === 'done' ? (auto.sent ? 'sent' : auto.skipped ? 'skipped' : 'error') : null;
                 const note = manual ? manual.note
-                  : auto?.sent ? `Texted ${auto.to} automatically, ${r?.verdict === 'PASS' ? 'as an FYI' : 'with the evidence'}.`
+                  : auto?.sent ? `Texted ${auto.to} automatically, ${String(auto.text || '').startsWith('FYI') ? 'as an FYI' : 'with the evidence'}.`
                   : auto?.skipped ? `${auto.to || 'Owner'} already has this exact result; not texting twice.`
                   : auto?.error ? `Couldn't text the owner: ${auto.error}` : '';
                 return (
@@ -465,16 +465,16 @@ export default function WarRoom() {
                       <div role="status" className="flex items-center gap-1.5 text-[12px] text-amber-200"><Loader2 size={13} className="animate-spin" /> Texting the code owner…</div>
                     )}
                     {!recorded && status && status !== 'sending' && (
-                      <div role="status" className={`flex items-start gap-1.5 text-[12px] ${status === 'error' ? 'text-red-300' : 'text-emerald-300'}`}>
+                      <div role="status" className={`flex items-start gap-1.5 text-[12px] ${status === 'error' ? 'text-red-300' : status === 'skipped' ? 'text-zinc-400' : 'text-emerald-300'}`}>
                         {status === 'error' ? <Lock size={13} className="mt-0.5 shrink-0" /> : <Smartphone size={13} className="mt-0.5 shrink-0" />}
                         {note}
                       </div>
                     )}
                     {!recorded && !r && <div className="text-[11.5px] text-zinc-500">The gate texts the code owner itself the moment it decides.</div>}
-                    {!recorded && r && status && status !== 'sending' && (
+                    {!recorded && r && status !== 'sending' && (
                       <button onClick={() => page(sel)}
                         className="mt-2 flex items-center gap-1.5 text-[11.5px] text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400">
-                        <Send size={12} /> Text {r.owners[0]?.name || 'the owner'} again
+                        <Send size={12} /> Text {r.owners[0]?.name || 'the owner'}{status ? ' again' : ''}
                       </button>
                     )}
                   </>
