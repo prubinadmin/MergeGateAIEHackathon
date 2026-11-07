@@ -1,28 +1,82 @@
-# Merge Gate Reviewer
+# Merge Gate
 
-> **Built by Michael, TAAZ and Peter (with Claude writing code) at the AIE Code Summit 2026 Hackathon, Shack15 SF.**  
-> **Core design rule:** *Easy to stop, hard to approve.*
+Merge Gate checks every external or AI-written PR in a large codebase and sends what it finds to the
+engineer who actually wrote the code being changed, as an iMessage on their phone.
 
-Merge Gate checks every external or AI-written PR in a large codebase. It routes what it finds to the engineer who actually wrote the code being changed, as an iMessage on their phone with evidence they can act on in 30 seconds.
+Built by Michael, TAAZ and Peter (with Claude writing code) at the AIE Code Summit 2026 Hackathon, Shack15 SF.  
+**Core design rule:** *Easy to stop, hard to approve.*
 
 ---
 
-## 1. Why Merge Gate?
+## Quick start
 
-- **The Problem:** An external PR arrives from an outside contributor, another team, or a coding agent. The company assigns it to whoever is on rotation. That engineer has never worked on this code, so they either rubber-stamp it or spend an hour learning it.
-- **Who could judge it in minutes:** The engineer who wrote those lines. They are rarely asked, because `CODEOWNERS` maps folders to teams, not lines to people.
-- **Where they are:** Not watching GitHub notifications. A PR that breaks their code should reach their phone, the way an on-call page does.
+### 1. Python Backend & CLI
+```bash
+pip install -e ".[dev]"
+python -m merge_gate verify --pr demo-1 --stub
+pytest
+```
 
-| Feature | Typical AI reviewer | CODEOWNERS / auto-assign | Merge Gate |
+Run the three demo scenarios (builds a throwaway multi-author repo):
+```bash
+python -m merge_gate demo          # rules + ownership only, no API
+python -m merge_gate demo --llm    # adds Muse Spark tests and summaries (needs MUSE_API_KEY in .env.local)
+```
+
+Try the whole loop without any API:
+```bash
+python -m merge_gate verify --pr demo-1 --stub > report.json
+python -m merge_gate notify report.json --reply BLOCK
+```
+
+### 2. Interactive Web UI & Simulator
+```bash
+npm install
+npm run dev
+```
+
+---
+
+## Who owns which file
+
+| Area | Owner | Files | Status |
 | --- | --- | --- | --- |
-| **Who decides** | An LLM reading the diff | A team owning the folder | The engineer who wrote the changed lines |
-| **What they receive** | A comment wall on GitHub | A review request | An iMessage with a reproducing test or the rule that fired |
-| **Evidence** | LLM opinion | None | Failing test, run hash, rule ID |
-| **Where it reaches them** | GitHub notifications | GitHub notifications | Their phone (SMS/iMessage) |
+| Verdict contract | all (change by agreement) | `merge_gate/schema.py` | done |
+| PR access (diff, files, refs) | Michael | `merge_gate/pr.py` | done |
+| Deterministic verdict | Michael | `merge_gate/verify.py` (`decide`) | done |
+| Rules R1-R9 (anti-gaming + SQL/eval/backdoor) | Michael | `merge_gate/rules.py` | done |
+| Ownership resolver (line-level blame, recency-weighted) | Michael | `merge_gate/owners.py` | done |
+| Sandbox runner (git archive, scrubbed env, timeout) | Michael | `merge_gate/sandbox.py` | done |
+| Spec-only test writer + summary (Muse Spark) | Michael | `merge_gate/testgen.py`, `merge_gate/llm.py` | done |
+| iMessage send / reply | TAAZ | `merge_gate/notify.py` (`Notifier`, `parse_reply`, `handle_reply`) | console stub works; plug in the iMessage provider |
+| Benchmark cases + scoring | Peter | `benchmark/`, `merge_gate/bench.py` | format + scoring done; cases to build |
+| Interactive Web Dashboard & Simulator | Peter / Frontend | `src/`, `index.html` | done |
 
 ---
 
-## 2. Design Rule: Easy to Stop, Hard to Approve
+## The verdict contract
+
+Every component exchanges one JSON report, defined in `merge_gate/schema.py`:
+
+```json
+{
+  "pr_id": "demo-1",
+  "verdict": "BLOCK | REVIEW | PASS",
+  "evidence": [{"type": "failing_test | rule", "id": "R1_DELETED_TEST", "detail": "...", "file": "...", "line": 41}],
+  "owners": [{"name": "Peter", "email": "...", "lines": 18, "last_touched": "2026-03-14", "score": 0.82}],
+  "summary": "plain-English text for the iMessage",
+  "run_hash": "sha256:...",
+  "gate_version": "v1"
+}
+```
+
+- `owners[0]` is the person to message.
+- A BLOCK always carries at least one piece of evidence.
+- `python -m merge_gate validate report.json` checks a report against the contract.
+
+---
+
+## Design Rule: Easy to Stop, Hard to Approve
 
 If the owner replies **`BLOCK`** from their phone, the PR is blocked at once in CI.  
 A text message alone can never approve or merge; approval requires GitHub login with the owner's own credentials.
@@ -32,69 +86,3 @@ Owner phone replies:
 - `WHY`: Returns the reproducing failing test case and output traceback.
 - `OK`: Does not merge. Replies with authenticated GitHub review link.
 - `FALSE ALARM`: Logged as feedback into the Secondary Learning Track.
-
----
-
-## 3. How It Works
-
-1. **PR opened.** A GitHub webhook or the CLI starts a run.
-2. **Independent tests.** Tests are written strictly from the issue text and public interface only. The test runner never sees the implementer's tests or reasoning.
-3. **Sandboxed run.** Tests run in an isolated subprocess with timeouts and pinned dependencies. Every input and output is hashed (`run_hash`) so runs can be replayed.
-4. **Anti-gaming checks.** Deterministic rules flag:
-   - `AG-01: DELETED_TEST` — Deleted tests or test suites
-   - `AG-02: SKIPPED_OR_DISABLED_TEST` — Tests marked `.skip`, `xit`, or `@pytest.mark.skip`
-   - `AG-03: WEAKENED_ASSERT` — Strict asserts replaced with truthiness (`toBe` -> `toBeDefined`)
-   - `AG-04: MOCKED_CODE_UNDER_TEST` — Mocking or spying on the target unit under test
-   - `AG-05: HARDCODED_OUTPUT` — Literal constant returns injected to fake tests
-   - `AG-06: SCOPE_CREEP_TEST_MUTATION` — Test changes outside issue scope
-5. **Deterministic verdict.** Deterministic code returns `BLOCK`, `REVIEW`, or `PASS`. (No LLM decides the verdict).
-6. **Find the owner.** `git blame` and `git log -L` weighted by recency decay ($e^{-\lambda \Delta t}$) and line count. `CODEOWNERS` is only a fallback.
-7. **iMessage the owner.** 2–3 line summary with verdict, failing test or rule ID, and evidence link.
-8. **Learning Track (vN+1).** Owner feedback trains Gate version $N+1$. Adopted only if catch rate rises and false blocks do not rise on held-out PRs; otherwise automatically rolled back.
-
----
-
-## 4. Fixed Owner Interface Contract
-
-```json
-{
-  "pr_id": "PR-412",
-  "verdict": "BLOCK",
-  "evidence": [
-    {
-      "type": "failing_test",
-      "id": "IT-102",
-      "detail": "test_enterprise_threshold_boundary failed: Expected volume discount 750000, got 0."
-    }
-  ],
-  "owners": [
-    {
-      "name": "Peter",
-      "lines": 42,
-      "last_touched": "2026-03-14"
-    }
-  ],
-  "summary": "PR #412 by copilot-agent[bot] broke your calculateTieredPrice(). The PR's own tests passed, but independent test IT-102 failed. Reply BLOCK to stop, or WHY for traceback.",
-  "run_hash": "8f3b14a29c104e..."
-}
-```
-
----
-
-## 5. CLI Usage & Starter Code
-
-Run directly via the included Python script:
-
-```bash
-python scripts/merge_gate.py \
-  --pr 412 \
-  --diff pr_412.diff \
-  --issue "Issue #1892: Tiered billing discounts"
-```
-
-Or run the interactive React & TypeScript application:
-
-```bash
-npm install
-npm run dev
-```

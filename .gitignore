@@ -1,8 +1,27 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# node
 node_modules/
-build/
 dist/
 coverage/
 .DS_Store
 *.log
-.env*
-!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+
+# generated benchmark repo
+benchmark/target_repo/
+
+# run output
+runs/
+.cache/
+
