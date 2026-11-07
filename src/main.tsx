@@ -7,7 +7,9 @@ import './index.css';
 
 type View = 'simulator' | 'live';
 
-const fromHash = (): View => (location.hash === '#live' ? 'live' : 'simulator');
+// The live gate is the landing page: it is the real system (or a labelled recording of it).
+// The simulator shows simulated data, so it is only reachable on purpose via #simulator.
+const fromHash = (): View => (location.hash === '#simulator' ? 'simulator' : 'live');
 
 function Root() {
   const [view, setView] = useState<View>(fromHash);
@@ -18,7 +20,7 @@ function Root() {
   }, []);
   const go = (v: View) => {
     setView(v);
-    history.replaceState(null, '', v === 'live' ? '#live' : location.pathname + location.search);
+    history.replaceState(null, '', v === 'simulator' ? '#simulator' : location.pathname + location.search);
   };
   const tab = (v: View, label: string, icon: ReactNode) => (
     <button
@@ -37,8 +39,8 @@ function Root() {
           Merge Gate
         </span>
         <div className="flex items-center gap-1">
-          {tab('simulator', 'Simulator', <Wrench size={14} />)}
           {tab('live', 'Live gate', <Radio size={14} />)}
+          {tab('simulator', 'Simulator (simulated data)', <Wrench size={14} />)}
         </div>
         <span className="ml-auto hidden text-[12px] text-zinc-500 md:block">The right engineer, on their phone, with proof.</span>
       </nav>
