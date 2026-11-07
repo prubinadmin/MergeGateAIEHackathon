@@ -1,6 +1,5 @@
 // Client for the real Merge Gate API (`python -m merge_gate serve`). Nothing here simulates a result:
 // without a backend it replays a real recorded run and says so.
-import recorded from './recorded-run.json';
 
 export const API_BASE: string =
   (import.meta as any).env?.VITE_MERGE_GATE_API || 'http://127.0.0.1:8787';
@@ -85,64 +84,89 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // Without a reachable gate (e.g. the public site), replay a real recorded run instead of an empty error.
-// Captured from `python -m merge_gate serve` with curl into recorded-run.json.
+// Captured from `python -m merge_gate serve` with curl into recorded-run.json (loaded only when needed).
+type Health = { ok: boolean; llm: boolean };
+type ReplyResult = { command: string; action: string; text: string; github_blocked: boolean };
 interface Recording {
   recorded_at: string;
-  health: { ok: boolean; llm: boolean };
+  health: Health;
   demo: DemoPr[];
   stats: Stats;
   runs: Record<string, RunEvent[]>;
   messages: Record<string, { to: Owner | null; text: string }>;
+  replies: Record<string, Record<string, ReplyResult>>;
 }
-const REC = recorded as unknown as Recording;
-export const RECORDED_AT = REC.recorded_at;
 const REPLAY_SECONDS = 8;
+const REPROBE_MS = 5000;
 
-let replay = false;
-/** True once the health probe failed and the page is replaying recorded-run.json. */
-export const replayMode = () => replay;
-
-const mode: Promise<boolean> = fetch(API_BASE + '/api/health', { signal: AbortSignal.timeout(1500) })
-  .then((r) => r.ok)
-  .catch(() => false)
-  .then((ok) => (replay = !ok));
-
-const recordedReport = (pr_id: string): Report => {
-  const last = REC.runs[pr_id]?.find((e) => e.type === 'report');
-  if (!last || last.type !== 'report') throw new Error(`No recorded run for ${pr_id}`);
-  return last.report;
-};
-
-// Mirrors merge_gate.notify.parse_reply + handle_reply so a replayed reply reads exactly like a live one.
-const ALIASES: Record<string, string> = {
-  BLOCK: 'BLOCK', STOP: 'BLOCK', WHY: 'WHY', OK: 'OK', APPROVE: 'OK',
-  FALSE: 'FALSE_ALARM', FALSE_ALARM: 'FALSE_ALARM', FP: 'FALSE_ALARM',
-};
-function replayReply(pr_id: string, text: string) {
-  const r = recordedReport(pr_id);
-  const words = text.trim().split(/\s+/).filter(Boolean).map((w) => w.toUpperCase().replace(/^[.!,?]+|[.!,?]+$/g, ''));
-  const command = !words.length ? 'UNKNOWN'
-    : words[0] === 'FALSE' && words[1] === 'ALARM' ? 'FALSE_ALARM'
-      : ALIASES[words[0]] || 'UNKNOWN';
-  const [action, out] =
-    command === 'BLOCK' ? ['block_pr', `Blocked ${r.pr_id}.`]
-      : command === 'WHY' ? ['send_text', [...(r.evidence.length ? r.evidence.map((e) => `${e.id}: ${e.detail}`) : ['No evidence recorded.']), `run ${r.run_hash}`].join('\n')]
-        : command === 'OK' ? ['send_text', `Approve on GitHub with your own login: ${r.pr_id}`]
-          : command === 'FALSE_ALARM' ? ['log_false_alarm', 'Thanks, logged. The gate will learn from it if held-out PRs agree.']
-            : ['none', 'Reply BLOCK, WHY, OK or FALSE ALARM.'];
-  return { command, action, text: out, github_blocked: false };
+function checkRecording(x: unknown): Recording {
+  const r = (x ?? {}) as Partial<Recording>;
+  if (typeof r.recorded_at !== 'string' || !r.health || !Array.isArray(r.demo) || !r.stats
+    || !r.runs || !r.messages || !r.replies) throw new Error('recorded-run.json is missing required fields');
+  return r as Recording;
 }
+
+async function probe(): Promise<Health | null> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 1500);
+  try {
+    const res = await fetch(API_BASE + '/api/health', { signal: ac.signal });
+    return res.ok ? ((await res.json()) as Health) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A public page must never reach for the visitor's loopback (no Local Network Access prompt).
+const localPage = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+const loopbackApi = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(API_BASE);
+
+let rec: Recording | null = null;
+let health: Health | null = null;
+let stats: Stats | null = null; // replay-session counters, start from the recorded stats
+let replay = false;
+const listeners = new Set<() => void>();
+/** True while the page is replaying recorded-run.json instead of talking to a live gate. */
+export const replayMode = () => replay;
+export const recordedAt = () => rec?.recorded_at ?? '';
+/** Notified when replay mode flips (e.g. the gate came up on localhost). Returns an unsubscribe. */
+export const subscribeMode = (f: () => void) => { listeners.add(f); return () => { listeners.delete(f); }; };
+
+const mode: Promise<void> = (async () => {
+  health = !localPage && loopbackApi ? null : await probe();
+  if (health) return;
+  rec = checkRecording((await import('./recorded-run.json')).default);
+  stats = { ...rec.stats };
+  replay = true;
+  if (!localPage) return;
+  const timer = setInterval(async () => {
+    const h = await probe();
+    if (!h || !replay) return;
+    clearInterval(timer);
+    health = h;
+    replay = false;
+    listeners.forEach((f) => f());
+  }, REPROBE_MS);
+})();
 
 /** Live API call, or the recorded answer in replay mode (never touches the network then). */
-const live = async <T,>(path: string, fromRecording: () => T, init?: RequestInit): Promise<T> =>
-  (await mode) ? fromRecording() : j<T>(path, init);
+const live = async <T,>(path: string, fromRecording: (r: Recording) => T, init?: RequestInit): Promise<T> => {
+  await mode;
+  return replay && rec ? fromRecording(rec) : j<T>(path, init);
+};
 
-export const getHealth = () => live('/api/health', () => REC.health);
-export const getDemo = () => live('/api/demo', () => REC.demo);
-export const getStats = () => live('/api/stats', () => REC.stats);
+/** Reuses the probe's answer instead of asking /api/health twice. */
+export const getHealth = async (): Promise<Health> => {
+  await mode;
+  return replay && rec ? rec.health : health ?? j<Health>('/api/health');
+};
+export const getDemo = () => live('/api/demo', (r) => r.demo);
+export const getStats = () => live('/api/stats', () => ({ ...stats! }));
 export const getMessage = (pr_id: string) =>
-  live<{ to: Owner | null; text: string }>('/api/message', () => {
-    const m = REC.messages[pr_id];
+  live<{ to: Owner | null; text: string }>('/api/message', (r) => {
+    const m = r.messages[pr_id];
     if (!m) throw new Error(`No recorded message for ${pr_id}`);
     return m;
   }, { method: 'POST', body: JSON.stringify({ pr_id }) });
@@ -151,21 +175,35 @@ export const pageOwner = (pr_id: string, pr_url = '', github?: { repo: string; n
   live<{ to: Owner | null; text: string; sent: string | null }>('/api/message', () => {
     throw new Error('Paging a real phone needs the live gate (python -m merge_gate serve).');
   }, { method: 'POST', body: JSON.stringify({ pr_id, pr_url, github, send: true }) });
+/** In replay, returns the real server's recorded answer to that exact reply. */
 export const postReply = (pr_id: string, text: string, github?: { repo: string; number: number }) =>
-  live<{ command: string; action: string; text: string; github_blocked: boolean }>('/api/reply',
-    () => replayReply(pr_id, text),
-    { method: 'POST', body: JSON.stringify({ pr_id, text, github }) });
+  live<ReplyResult>('/api/reply', (r) => {
+    const out = r.replies[pr_id]?.[text.trim().toUpperCase()];
+    if (!out) throw new Error(`No recorded reply "${text}" for ${pr_id}`);
+    stats!.owner_replies += 1;
+    if (out.action === 'block_pr') stats!.owner_blocks += 1;
+    return out;
+  }, { method: 'POST', body: JSON.stringify({ pr_id, text, github }) });
 
 /** Replays a recorded run with its real stage spacing, compressed to at most REPLAY_SECONDS. */
-function replayGate(pr_id: string, onEvent: (e: RunEvent) => void): () => void {
-  const events = REC.runs[pr_id];
+function replayGate(r: Recording, pr_id: string, onEvent: (e: RunEvent) => void): () => void {
+  const events = r.runs[pr_id];
   if (!events?.length) {
     onEvent({ type: 'error', error: `No recorded run for ${pr_id}`, t: 0 });
     return () => {};
   }
   const scale = Math.min(1, REPLAY_SECONDS / Math.max(events[events.length - 1].t, 0.001));
   // t is rescaled so the case clock tracks wall time; each stage's `ms` keeps its real recorded duration.
-  const timers = events.map((e) => setTimeout(() => onEvent({ ...e, t: +(e.t * scale).toFixed(2) }), e.t * scale * 1000));
+  const timers = events.map((e) => setTimeout(() => {
+    if (e.type === 'report' && stats) {
+      stats.checked += 1;
+      stats.events += 1;
+      if (e.report.verdict === 'BLOCK') stats.blocked += 1;
+      else if (e.report.verdict === 'REVIEW') stats.review += 1;
+      else stats.passed += 1;
+    }
+    onEvent({ ...e, t: +(e.t * scale).toFixed(2) });
+  }, e.t * scale * 1000));
   return () => timers.forEach(clearTimeout);
 }
 
@@ -173,9 +211,9 @@ function replayGate(pr_id: string, onEvent: (e: RunEvent) => void): () => void {
 export function runGate(pr_id: string, llm: boolean | null, onEvent: (e: RunEvent) => void): () => void {
   let cancel: (() => void) | null = null;
   let cancelled = false;
-  mode.then((isReplay) => {
+  mode.then(() => {
     if (cancelled) return;
-    if (isReplay) { cancel = replayGate(pr_id, onEvent); return; }
+    if (replay && rec) { cancel = replayGate(rec, pr_id, onEvent); return; }
     const q = new URLSearchParams({ pr_id });
     if (llm !== null) q.set('llm', llm ? '1' : '0');
     const es = new EventSource(`${API_BASE}/api/run?${q}`);
@@ -189,7 +227,7 @@ export function runGate(pr_id: string, llm: boolean | null, onEvent: (e: RunEven
       es.close();
     };
     cancel = () => es.close();
-  });
+  }).catch((e: Error) => { if (!cancelled) onEvent({ type: 'error', error: e.message, t: 0 }); });
   return () => { cancelled = true; cancel?.(); };
 }
 

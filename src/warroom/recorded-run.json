@@ -546,5 +546,85 @@
    },
    "text": "FYI: a PR touched your code and passed (demo-3).\nHi Michael: An outside contributor changed your cart count function."
   }
+ },
+ "replies": {
+  "demo-1": {
+   "BLOCK": {
+    "command": "BLOCK",
+    "action": "block_pr",
+    "text": "Blocked demo-1.",
+    "github_blocked": false
+   },
+   "WHY": {
+    "command": "WHY",
+    "action": "send_text",
+    "text": "R1_DELETED_TEST: PR deletes test_discount_never_negative from tests/test_pricing.py\ngate::test_invariant_over_hundred_clamped_to_zero: test_invariant_over_hundred_clamped_to_zero: AssertionError: over 100% is free not negative\ngate::test_invariant_bulk_over_hundred_free: test_invariant_bulk_over_hundred_free: AssertionError: bulk over 100% is free\nrun sha256:8a9d92abaeb95825854b619c417869d029a868527bb46f4a722f2f9d75c2c8d0",
+    "github_blocked": false
+   },
+   "OK": {
+    "command": "OK",
+    "action": "send_text",
+    "text": "Approve on GitHub with your own login: demo-1",
+    "github_blocked": false
+   },
+   "FALSE ALARM": {
+    "command": "FALSE_ALARM",
+    "action": "log_false_alarm",
+    "text": "Thanks, logged. The gate will learn from it if held-out PRs agree.",
+    "github_blocked": false
+   }
+  },
+  "demo-2": {
+   "BLOCK": {
+    "command": "BLOCK",
+    "action": "block_pr",
+    "text": "Blocked demo-2.",
+    "github_blocked": false
+   },
+   "WHY": {
+    "command": "WHY",
+    "action": "send_text",
+    "text": "R3_WEAKENED_ASSERT: test_total in tests/test_orders.py went from 2 asserts to 1\nR7_DANGEROUS_CALL: shop/orders.py:3 adds SQL built from a string instead of query parameters\nrun sha256:033a7409304fd5b838a698c7eb8b2092217bbbb989e3776efb56e8ee05bde9ca",
+    "github_blocked": false
+   },
+   "OK": {
+    "command": "OK",
+    "action": "send_text",
+    "text": "Approve on GitHub with your own login: demo-2",
+    "github_blocked": false
+   },
+   "FALSE ALARM": {
+    "command": "FALSE_ALARM",
+    "action": "log_false_alarm",
+    "text": "Thanks, logged. The gate will learn from it if held-out PRs agree.",
+    "github_blocked": false
+   }
+  },
+  "demo-3": {
+   "BLOCK": {
+    "command": "BLOCK",
+    "action": "block_pr",
+    "text": "Blocked demo-3.",
+    "github_blocked": false
+   },
+   "WHY": {
+    "command": "WHY",
+    "action": "send_text",
+    "text": "No evidence recorded.\nrun sha256:0e5dcc8eaacd69e0ea7b42cabeb2723be44173c0a999f9ff3d3ae5d32bc29fb6",
+    "github_blocked": false
+   },
+   "OK": {
+    "command": "OK",
+    "action": "send_text",
+    "text": "Approve on GitHub with your own login: demo-3",
+    "github_blocked": false
+   },
+   "FALSE ALARM": {
+    "command": "FALSE_ALARM",
+    "action": "log_false_alarm",
+    "text": "Thanks, logged. The gate will learn from it if held-out PRs agree.",
+    "github_blocked": false
+   }
+  }
  }
 }

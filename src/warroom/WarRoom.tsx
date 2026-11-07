@@ -3,8 +3,8 @@ import { ChevronRight, CircleCheck, GitPullRequest, Hash, Loader2, Lock, Play, S
 import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
-  API_BASE, DemoPr, Evidence, RECORDED_AT, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, replayMode, runGate,
+  API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -142,6 +142,7 @@ export default function WarRoom() {
   const [useLlm, setUseLlm] = useState<boolean>(true);
   const [apiDown, setApiDown] = useState('');
   const [recorded, setRecorded] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showWhy, setShowWhy] = useState(true);
   const [replyBusy, setReplyBusy] = useState(false);
@@ -159,6 +160,16 @@ export default function WarRoom() {
       .catch(() => setApiDown(`Cannot reach the Merge Gate API at ${API_BASE}. Start it with: python -m merge_gate serve`));
     refreshStats();
   }, [refreshStats]);
+
+  // The gate came up while we were replaying (localhost only): switch to live data.
+  useEffect(() => subscribeMode(() => {
+    setRecorded(replayMode());
+    setConnected(true);
+    setApiDown('');
+    getHealth().then((h) => { setLlm(h.llm); setUseLlm(h.llm); }).catch(() => {});
+    getDemo().then(setPrs).catch(() => {});
+    refreshStats();
+  }), [refreshStats]);
 
   const patch = (id: string, f: (c: CaseState) => CaseState) =>
     setCases((all) => ({ ...all, [id]: f(all[id] || EMPTY) }));
@@ -235,8 +246,10 @@ export default function WarRoom() {
   return (
     <div className="flex-1 bg-[#0a0a0b] text-zinc-100">
       {recorded
-        ? <div className="bg-zinc-900/60 border-b border-zinc-800 px-6 py-2 text-[13px] text-zinc-300 font-mono">Recorded run of the real gate (captured {new Date(RECORDED_AT).toLocaleString()}). Run `python -m merge_gate serve` for live runs.</div>
-        : apiDown && <div className="bg-red-950/60 border-b border-red-900 px-6 py-2 text-[13px] text-red-200 font-mono">{apiDown}</div>}
+        ? <div className="bg-zinc-900/60 border-b border-zinc-800 px-6 py-2 text-[13px] text-zinc-300 font-mono">Recorded run of the real gate (captured {new Date(recordedAt()).toLocaleString()}). Run `python -m merge_gate serve` for live runs.</div>
+        : connected
+          ? <div role="status" className="bg-emerald-950/40 border-b border-emerald-900 px-6 py-2 text-[13px] text-emerald-200 font-mono">Live gate connected.</div>
+          : apiDown &&<div className="bg-red-950/60 border-b border-red-900 px-6 py-2 text-[13px] text-red-200 font-mono">{apiDown}</div>}
       <StatsBar stats={stats} llm={llm} recorded={recorded} />
 
       <div className="mx-6 mt-3 rounded-xl border border-zinc-800 bg-zinc-950">
@@ -254,8 +267,8 @@ export default function WarRoom() {
             );
           })}
           <div className="ml-auto flex items-center gap-4">
-            <label className="flex items-center gap-2 text-[12px] text-zinc-400 font-mono">
-              <input type="checkbox" checked={useLlm} disabled={!llm} onChange={(e) => setUseLlm(e.target.checked)} className="accent-amber-500" />
+            <label title={recorded ? 'Recorded with Muse Spark on' : undefined} className="flex items-center gap-2 text-[12px] text-zinc-400 font-mono">
+              <input type="checkbox" checked={useLlm} disabled={!llm || recorded} onChange={(e) => setUseLlm(e.target.checked)} className="accent-amber-500" />
               Muse Spark tests
             </label>
             <div className="text-right">
@@ -422,10 +435,10 @@ export default function WarRoom() {
           <div className="lg:col-span-2 xl:col-span-1">
             <Phone owner={r?.owners[0]?.name} c={c} onReply={reply} busy={replyBusy} />
             <div className="mx-auto mt-3 w-[300px]">
-              <button onClick={() => page(sel)} disabled={!r || r.verdict === 'PASS' || paging[sel]?.status === 'sending'}
+              <button onClick={() => page(sel)} disabled={recorded || !r || r.verdict === 'PASS' || paging[sel]?.status === 'sending'}
                 className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 text-[13px] font-semibold text-amber-200 transition-colors duration-150 hover:bg-amber-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-35">
                 {paging[sel]?.status === 'sending' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-                {paging[sel]?.status === 'sending' ? 'Paging…' : `Page ${r?.owners[0]?.name || 'the owner'}'s real phone`}
+                {recorded ? 'Paging needs the live gate' : paging[sel]?.status === 'sending' ? 'Paging…' : `Page ${r?.owners[0]?.name || 'the owner'}'s real phone`}
               </button>
               {paging[sel] && paging[sel].status !== 'sending' && (
                 <div role="status" className={`mt-2 flex items-start gap-1.5 text-[12px] ${paging[sel].status === 'sent' ? 'text-emerald-300' : 'text-red-300'}`}>
