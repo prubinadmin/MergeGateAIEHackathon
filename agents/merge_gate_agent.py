@@ -246,11 +246,14 @@ def main() -> None:
     agents = build_agents(seed, port, use_llm)
     for a in agents[1:]:
         print(f"[merge-gate] specialist {a.name}: {a.address}")
-    # Bureau does not print this itself; the inspector reaches the orchestrator through the Bureau's port.
     print(f"[merge-gate] orchestrator (ASI:One-facing): {agents[0].address}\n[merge-gate] Agent inspector: "
           f"https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A{port}&address={agents[0].address}", flush=True)
-    # One process, five agents, each with its own address; specialists are reached in-process.
-    Bureau(agents=agents, port=port).run()
+    # The orchestrator gets its own server on `port` so the Agentverse inspector can find it (a multi-agent
+    # Bureau answers /agent_info only with an x-uagents-address header, which the inspector doesn't send).
+    # The four specialists share a Bureau on port+1; all five run in one process and event loop.
+    loop = agents[0]._loop  # uagents binds every agent to this loop at construction; run everything on it
+    specialists = Bureau(agents=agents[1:], port=port + 1, endpoint=[f"http://127.0.0.1:{port + 1}/submit"], loop=loop)
+    loop.run_until_complete(asyncio.gather(agents[0].run_async(), specialists.run_async()))
 
 
 if __name__ == "__main__":
