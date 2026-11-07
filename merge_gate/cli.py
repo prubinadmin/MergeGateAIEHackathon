@@ -5,6 +5,7 @@
     python -m merge_gate validate report.json               # check a report against the contract
     python -m merge_gate notify report.json --reply "WHY"   # dry-run the owner message and a reply
     python -m merge_gate bench --split heldout [--stub]     # score the gate on the benchmark
+    python -m merge_gate bench --baseline llm|codeowners    # score a baseline on the same cases
 """
 
 from __future__ import annotations
@@ -153,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--root", default="benchmark")
     b.add_argument("--split", choices=["train", "heldout"], default=None)
     b.add_argument("--stub", action="store_true")
+    b.add_argument("--baseline", choices=["llm", "codeowners"], default=None,
+                   help="score a baseline instead of the gate (llm: Muse Spark reads the diff; codeowners: folder routing)")
     _llm_flags(b)
 
     ot = sub.add_parser("owner-tests", help="list or remove the rules owners taught the gate by iMessage")
@@ -273,6 +276,14 @@ def main(argv: list[str] | None = None) -> int:
         if not cases:
             print(f"no cases under {args.root}/cases", file=sys.stderr)
             return 1
+        if args.baseline:
+            from .baselines import METRICS, run as run_baseline
+
+            s = score(cases, run_baseline(args.baseline, cases))
+            keep = ("cases", "bad", "clean", *METRICS[args.baseline], "missing_reports")
+            print(json.dumps({"baseline": args.baseline, **{k: s[k] for k in keep}}, indent=2))
+            return 0
+
         from concurrent.futures import ThreadPoolExecutor
 
         use = False if args.stub else _use_llm(args)

@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr17",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/17",
+  "title": "bulk_price: accept any iterable of prices",
+  "issue_text": "Callers pass generators to bulk_price and type checkers complain. Accept any iterable of prices.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "ada@example.com",
+    "split": "heldout"
+  }
+}

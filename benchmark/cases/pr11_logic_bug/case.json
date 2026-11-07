@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr11",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/11",
+  "title": "Clean up float noise in tax_for",
+  "issue_text": "Debug logs show intermediate tax values like 1.4492750000000001. Tidy up the arithmetic in tax_for; the returned values must not change.",
+  "opened_by": "agent:autofix-bot",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "ben@example.com",
+    "split": "heldout"
+  }
+}

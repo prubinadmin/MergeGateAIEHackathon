@@ -35,6 +35,17 @@ class GateConfig:
     change: str = ""  # one line: what this version changed
 
 
+def knob(e: Evidence) -> str:
+    """The setting that controls this evidence: its rule id, or the class of a gate test (gate::test_issue, gate::test_invariant)."""
+    if e.type == "rule":
+        return e.id.split("::")[0]
+    name = e.id.split("::")[-1]
+    for cls in ("test_issue", "test_invariant"):
+        if name.startswith(cls):
+            return f"gate::{cls}"
+    return e.id
+
+
 def apply_config(evidence: list[Evidence], cfg: GateConfig | None) -> list[Evidence]:
     if not cfg or not cfg.rule_severity:
         return evidence
@@ -43,7 +54,7 @@ def apply_config(evidence: list[Evidence], cfg: GateConfig | None) -> list[Evide
         if e.id.startswith("owner::"):  # an owner's own rule: learned config never mutes or downgrades it
             out.append(e)
             continue
-        level = cfg.rule_severity.get(e.id) or cfg.rule_severity.get(e.id.split("::")[0])
+        level = cfg.rule_severity.get(e.id) or cfg.rule_severity.get(knob(e))
         if level == "off":
             continue
         if level in ("block", "review"):
@@ -114,10 +125,10 @@ def propose(
         r = current.get(c.pr.pr_id)
         if c.label.true_verdict == "BLOCK" and r and r.verdict != "BLOCK":
             for e in raw[c.pr.pr_id].evidence:
-                if e.type == "rule":
-                    level = _rule_level(cfg, e.id, e.severity)
-                    if level != "block":
-                        add(e.id, _bump(level, up=True), f"{c.pr.pr_id} ({c.label.kind}) got through; {e.id} {level} -> {_bump(level, up=True)}")
+                k = knob(e)
+                level = _rule_level(cfg, k, e.severity)
+                if level != "block":
+                    add(k, _bump(level, up=True), f"{c.pr.pr_id} ({c.label.kind}) got through; {k} {level} -> {_bump(level, up=True)}")
     return cands
 
 

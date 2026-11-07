@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr13",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/13",
+  "title": "Paginate search_orders",
+  "issue_text": "The admin order search shows only the first 20 results. Add an offset parameter (default 0, never negative) so the UI can page through results.",
+  "opened_by": "outside-contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "dana@example.com",
+    "split": "train"
+  }
+}
