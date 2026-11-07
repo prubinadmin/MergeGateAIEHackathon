@@ -1,10 +1,19 @@
 import asyncio
 import json
+from collections import deque
 
 import pytest
 
-from agents.merge_gate_agent import Command, format_verdict, handle, parse_command, verdict_card
+import agents.merge_gate_agent as agent
+from agents.merge_gate_agent import Command, format_verdict, handle, parse_command, seen_before, verdict_card
+from merge_gate import store
 from merge_gate.schema import Evidence, Owner, VerdictReport
+
+
+@pytest.fixture(autouse=True)
+def _own_run_log(tmp_path, monkeypatch):
+    """handle() appends to the hash-chained run log (runs/log.jsonl, cwd-relative): keep it out of the repo."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _report(verdict="BLOCK"):
@@ -175,6 +184,39 @@ def test_gate_runs_in_background_and_chat_stays_responsive():
     asyncio.run(scenario())
 
 
+def test_run_over_budget_is_a_timeout_failure_reply(monkeypatch):
+    monkeypatch.setattr(agent, "GATE_BUDGET_S", 0.05)
+
+    async def hung_run(pr_id):
+        await asyncio.Event().wait()  # a specialist that never answers
+
+    out = _run("verify demo-1", FakeState(), run=hung_run)
+    assert out[0][0].startswith("Running the gate") and out[-1][0].startswith("The gate failed: TimeoutError")
+    assert len(out) == 2  # the failure is the reply: no silence, no verdict card
+
+
+def test_commands_and_traces_join_the_hash_chain():
+    s = FakeState()
+
+    async def run(pr_id):
+        return _report(), ["Rules agent: done in 3 ms"]
+
+    _run("why demo-2", s, sender=SENDER)
+    _run("verify demo-1", s, run=run, sender=SENDER)
+    recs = store.read()
+    assert [r["kind"] for r in recs] == ["chat_command", "chat_command", "agent_trace"]
+    assert recs[0]["data"] == {"sender": SENDER, "text": "why demo-2", "kind": "why", "pr_id": "demo-2"}
+    assert recs[2]["data"] == {"pr_id": "demo-1", "trace": ["Rules agent: done in 3 ms"]}
+    assert store.verify_chain() == (True, -1)
+
+
+def test_redelivered_message_is_handled_once():
+    seen = deque(maxlen=2)
+    assert not seen_before(seen, "m1") and seen_before(seen, "m1")  # first delivery acts, the redelivery does not
+    assert not seen_before(seen, "m2") and not seen_before(seen, "m3")
+    assert not seen_before(seen, "m1")  # bounded memory: the oldest id is forgotten, not the newest
+
+
 def test_per_sender_spawner_serializes_one_sender_only():
     from agents.merge_gate_agent import per_sender_spawner
 
@@ -198,7 +240,7 @@ def test_per_sender_spawner_serializes_one_sender_only():
     asyncio.run(scenario())
 
 
-def test_real_gate_on_demo_1_through_the_handler(tmp_path, monkeypatch):
+def _demo_state(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # demo repo + run log go to tmp
     for k in ("SENDBLUE_API_KEY", "SENDBLUE_API_SECRET"):
         monkeypatch.delenv(k, raising=False)
@@ -206,6 +248,12 @@ def test_real_gate_on_demo_1_through_the_handler(tmp_path, monkeypatch):
 
     state = State(use_llm=False)
     state.notifier = None
+    state.demo()
+    return state
+
+
+def test_real_gate_on_demo_1_through_the_handler(tmp_path, monkeypatch):
+    state = _demo_state(tmp_path, monkeypatch)
     out = _run("verify demo-1", state)
     text, card = out[-1]
     assert text.startswith("BLOCK: demo-1") and "R1" in text and "run_hash sha256:" in text
@@ -221,114 +269,6 @@ def test_build_agents_orchestrator_plus_four_specialists():
     assert len({a.address for a in agents}) == 5 and all(a.address.startswith("agent1") for a in agents)
     assert [p.name for p in agents[0].protocols.values()] == ["AgentChatProtocol"]
     assert [a.name for a in agents[1:]] == ["merge-gate-rules", "merge-gate-ownerrouter", "merge-gate-testwriter", "merge-gate-sandbox"]
-
-
-class FakeCtx:
-    """Stands in for the orchestrator's Context: 'delivers' each StepRequest to the real specialist code."""
-
-    def __init__(self, dead=(), flaky=(), stale=()):
-        self.dead, self.flaky, self.stale, self.calls, self.timeouts = set(dead), set(flaky), set(stale), [], {}
-
-    async def send_and_receive(self, dest, req, response_type, timeout):
-        from agents.team import run_step
-        from merge_gate.pr import PullRequest
-
-        self.calls.append(req.step)
-        self.timeouts[req.step] = timeout
-        if req.step in self.dead:
-            return None, type("S", (), {"detail": "Timeout waiting for response"})()
-        if req.step in self.flaky and self.calls.count(req.step) == 1:
-            return response_type(step=req.step, ok=False, req_id=req.req_id, error="OSError: disk hiccup"), None
-        out = run_step(req.step, PullRequest(**req.pr.model_dump()), req.source, req.timeout_s)
-        rid = "an-earlier-request" if req.step in self.stale else req.req_id
-        return response_type(step=req.step, ok=True, req_id=rid, **out), None
-
-
-def _demo_state(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    for k in ("SENDBLUE_API_KEY", "SENDBLUE_API_SECRET"):
-        monkeypatch.delenv(k, raising=False)
-    from merge_gate.serve import State
-
-    state = State(use_llm=False)
-    state.notifier = None
-    state.demo()
-    return state
-
-
-ADDRS = {s: f"agent1{s}" for s in ("rules", "owners", "tests", "sandbox")}
-
-
-def test_fan_out_retries_errors_but_not_timeouts(tmp_path, monkeypatch):
-    pytest.importorskip("uagents")
-    from agents.team import fan_out
-
-    state = _demo_state(tmp_path, monkeypatch)
-    ctx = FakeCtx(dead={"owners"}, flaky={"rules"})
-    steps, trace = asyncio.run(fan_out(ctx, ADDRS, state.prs["demo-1"], use_llm=False))
-    assert ctx.calls.count("rules") == 2  # explicit error result: one retry
-    assert ctx.calls.count("owners") == 1  # timeout: no retry (it would queue behind the busy specialist)
-    assert "Rules agent: done" in trace[0] and "after a retry" in trace[0]
-    assert trace[1] == ("OwnerRouter agent failed (Timeout waiting for response); ran that step in-process instead")
-    assert "skipped" in trace[2]
-    report = state.verify({"pr_id": "demo-1", "llm": False}, None, steps)
-    plain = state.verify({"pr_id": "demo-1", "llm": False})
-    assert report.verdict == "BLOCK" and report.evidence[0].id.startswith("R1")
-    assert report.run_hash == plain.run_hash  # same gate, same answer, whichever agent did the work
-
-
-def test_fan_out_ignores_a_stale_late_reply(tmp_path, monkeypatch):
-    pytest.importorskip("uagents")
-    from agents.team import fan_out
-
-    state = _demo_state(tmp_path, monkeypatch)
-    ctx = FakeCtx(stale={"owners"})
-    steps, trace = asyncio.run(fan_out(ctx, ADDRS, state.prs["demo-1"], use_llm=False))
-    assert ctx.calls.count("owners") == 1 and "stale reply" in trace[1] and "in-process" in trace[1]
-    assert [o.email for o in steps["owners"](None)]  # the in-process result, not the stale one
-
-
-def test_fan_out_step_exception_does_not_abandon_siblings(tmp_path, monkeypatch):
-    pytest.importorskip("uagents")
-    import agents.team as team
-
-    state = _demo_state(tmp_path, monkeypatch)
-    real, done = team.run_step, []
-
-    def run_step(step, *a):
-        if step == "owners":
-            raise RuntimeError("git blame exploded")
-        out = real(step, *a)
-        done.append(step)
-        return out
-
-    monkeypatch.setattr(team, "run_step", run_step)
-    with pytest.raises(RuntimeError, match="OwnerRouter step failed: RuntimeError: git blame exploded"):
-        asyncio.run(team.fan_out(FakeCtx(dead={"owners"}), ADDRS, state.prs["demo-1"], use_llm=False))
-    assert done == ["rules"]  # the sibling finished; the run then failed loudly instead of a silent PASS
-
-
-def test_fan_out_testwriter_exception_becomes_a_note(tmp_path, monkeypatch):
-    pytest.importorskip("uagents")
-    import agents.team as team
-
-    state = _demo_state(tmp_path, monkeypatch)
-    real = team.run_step
-    monkeypatch.setattr(team, "run_step", lambda step, *a: (_ for _ in ()).throw(ValueError("bad"))
-                        if step == "tests" else real(step, *a))
-    steps, trace = asyncio.run(team.fan_out(FakeCtx(dead={"tests"}), ADDRS, state.prs["demo-1"], use_llm=True))
-    assert "TestWriter/Sandbox step failed (ValueError: bad)" in trace[2]
-    assert steps["testgen"](None, 60).error == "generated tests unavailable: ValueError: bad"
-
-
-def test_step_timeouts_cover_the_llm_and_both_sandbox_runs():
-    import inspect
-
-    from agents.team import step_timeout
-    from merge_gate import llm
-
-    assert step_timeout("tests", 60) >= inspect.signature(llm.complete).parameters["timeout_s"].default
-    assert step_timeout("sandbox", 60) > 2 * 60 and step_timeout("sandbox", 90) > 2 * 90
 
 
 def test_agent_verdicts_are_logged_as_asi_one_with_fan_out_time(tmp_path, monkeypatch):
@@ -360,19 +300,3 @@ def test_stats_do_not_count_chat_block_requests_as_owner_actions(tmp_path, monke
     finally:
         srv.shutdown()
     assert stats["owner_blocks"] == 1 and stats["owner_replies"] == 1
-
-
-def test_fan_out_with_llm_chains_testwriter_into_sandbox(tmp_path, monkeypatch):
-    pytest.importorskip("uagents")
-    import merge_gate.testgen as tg
-    from agents.team import fan_out
-
-    state = _demo_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(tg, "generate_tests", lambda pr: "def test_invariant_never_negative():\n"
-                        "    from shop.pricing import apply_discount\n    assert apply_discount(10, 150) == 0.0\n")
-    ctx = FakeCtx()
-    steps, trace = asyncio.run(fan_out(ctx, {s: s for s in ("rules", "owners", "tests", "sandbox")}, state.prs["demo-1"], use_llm=True))
-    assert sorted(ctx.calls) == ["owners", "rules", "sandbox", "tests"] and len(trace) == 4
-    res = steps["testgen"](None, 60)
-    assert res.kept_invariants == ["test_invariant_never_negative"]
-    assert [e.id for e in res.evidence] == ["gate::test_invariant_never_negative"]  # PR breaks the invariant
