@@ -86,3 +86,37 @@ Owner phone replies:
 - `WHY`: Returns the reproducing failing test case and output traceback.
 - `OK`: Does not merge. Replies with authenticated GitHub review link.
 - `FALSE ALARM`: Logged as feedback into the Secondary Learning Track.
+
+---
+
+## Built during the hackathon
+
+Everything in this repo was written on Saturday, Nov 7, 2026, at the AIE Code Summit Hackathon, after
+10:45 AM. Nothing was carried over from an earlier project.
+
+| Component | Where |
+|---|---|
+| Verdict contract (BLOCK / REVIEW / PASS, evidence, owners, run hash) | `merge_gate/schema.py` |
+| Deterministic verdict (no LLM decides) | `merge_gate/verify.py` |
+| Anti-gaming rules R1–R6 (deleted/skipped tests, weakened asserts, mocked subject, hardcoded outputs, out-of-scope test edits) | `merge_gate/rules.py` |
+| Spec-only test writer: Muse Spark sees the issue + public interface, never the PR's tests | `merge_gate/testgen.py`, `merge_gate/llm.py` |
+| Sandbox runner: `git archive` into a temp dir, pytest with timeout, scrubbed env, replayable hash | `merge_gate/sandbox.py` |
+| Ownership resolver: `git blame` on the changed base lines, recency-weighted, CODEOWNERS fallback | `merge_gate/owners.py` |
+| iMessage formatter + reply handling (BLOCK / WHY / OK / FALSE ALARM / free text) | `merge_gate/notify.py` |
+| Benchmark format + scoring (catch rate, false blocks, routing accuracy) | `merge_gate/bench.py`, `benchmark/` |
+| Demo scenarios + CLI | `merge_gate/demo.py`, `merge_gate/cli.py` |
+| Web UI: pipeline view, phone simulator, learning track | `src/` |
+| GitHub Actions check | `templates/merge-gate.yml` |
+
+### Synthetic authors (disclosure)
+
+The benchmark target repo is committed under at least 5 synthetic author identities so that owner
+routing can be measured. Commit timestamps are real (today); only author names and emails are
+simulated. Phone numbers live only in a local, git-ignored `.env` and never appear in this repo.
+
+### Models and services
+
+- **Muse Spark 1.3** (Meta Model API, standard tier): writes spec-only tests, iMessage summaries, and turns owner replies into tests. It never decides the verdict.
+- **SubQ Snap 1.1**: picks which candidate owner to page and how urgently, with the full file history in context.
+- **Gemini**: the implementer under test, from a different model family than the gate.
+- **Sendblue**: iMessage delivery with SMS fallback. **MongoDB Atlas**: run log and test registry.
