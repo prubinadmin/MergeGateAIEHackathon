@@ -136,3 +136,23 @@ export interface GateRuleVersion {
   changeNote: string;
   ownerFeedbackTrigger?: string;
 }
+
+export interface AiAgentSuggestion {
+  criterion: string;
+  file: string;
+  line: number;
+  title: string;
+  recommendation: string;
+  suggestedPatch: string;
+}
+
+export interface AiAgentVerificationReport {
+  agentSummary: string;
+  synthesizedTests: IndependentTestCase[];
+  detectedViolations: AntiGamingViolation[];
+  suggestions: AiAgentSuggestion[];
+  agentModel: string;
+  executedAt: string;
+  mode: 'live-gemini-agent' | 'generic-ast-agent';
+}
+
