@@ -79,6 +79,14 @@ def comment(repo: str, pr_number: int, text: str) -> dict:
     return _call("POST", f"/repos/{repo}/issues/{pr_number}/comments", {"body": text})
 
 
+def default_branch(repo: str) -> str:
+    return _call("GET", f"/repos/{repo}")["default_branch"]
+
+
+def open_pr(repo: str, head: str, base: str, title: str, body: str) -> dict:
+    return _call("POST", f"/repos/{repo}/pulls", {"title": title, "head": head, "base": base, "body": body})
+
+
 def status_line(report: VerdictReport) -> str:
     owner = report.owners[0].name if report.owners else "code owner"
     if report.verdict == "PASS":

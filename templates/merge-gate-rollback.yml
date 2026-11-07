@@ -1,0 +1,58 @@
+# Copy to .github/workflows/merge-gate-rollback.yml in the repo you want to protect.
+#
+# Every push to main is re-verified by Merge Gate (base = first parent, head = the pushed commit).
+# On BLOCK it pushes a branch merge-gate/revert-<sha> with a revert commit and opens a revert PR.
+# It never pushes to main and never force-pushes: merging the revert PR is a human decision.
+#
+# Secrets: secrets.MUSE_API_KEY (optional; without it the gate runs rules + ownership only).
+# Repo setting: Actions > General > "Allow GitHub Actions to create and approve pull requests" must be on.
+
+name: "Merge Gate rollback"
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: merge-gate-rollback-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # push the merge-gate/revert-* branch
+  pull-requests: write   # open the revert PR
+
+jobs:
+  rollback:
+    name: "Merge Gate rollback"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository that was pushed
+        uses: actions/checkout@v4
+        with:
+          path: target    # the pushed files live here and are only ever read as data
+          fetch-depth: 0  # full history: first parent and git blame
+          persist-credentials: false  # the gate pushes with the token from env, not from target/.git/config
+
+      - name: Check out Merge Gate
+        uses: actions/checkout@v4
+        with:
+          repository: prubinadmin/MergeGateAIEHackathon
+          path: gate
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install pytest ./gate
+
+      - name: Re-verify the pushed commit; open a revert PR on BLOCK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MUSE_API_KEY: ${{ secrets.MUSE_API_KEY }}
+        # Run from an empty directory, never from the checkout: the gate must not import the repo's merge_gate/
+        # (-I), read its .env, or load its gate_versions/. github.sha and github.repository are not user-controlled.
+        run: |
+          mkdir -p "$RUNNER_TEMP/gate-run" && cd "$RUNNER_TEMP/gate-run"
+          python -I -m merge_gate rollback "${{ github.sha }}" --repo "$GITHUB_WORKSPACE/target" --push --github "${{ github.repository }}"

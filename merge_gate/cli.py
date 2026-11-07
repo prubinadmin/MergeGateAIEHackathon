@@ -100,6 +100,13 @@ def main(argv: list[str] | None = None) -> int:
     ci.add_argument("--no-publish", action="store_true", help="do not call the GitHub API")
     ci.add_argument("--repo", default=".", help="path to the PR checkout; run the gate from a different, clean directory")
 
+    rb = sub.add_parser("rollback", help="re-verify a merged commit; on BLOCK make a revert branch (and PR with --push)")
+    rb.add_argument("sha")
+    rb.add_argument("--repo", default=".", help="path to the repo; run the gate from a different, clean directory")
+    rb.add_argument("--push", action="store_true", help="push the revert branch and open a PR (needs --github, GITHUB_TOKEN)")
+    rb.add_argument("--github", default="", help="owner/repo on GitHub")
+    _llm_flags(rb)
+
     s = sub.add_parser("serve", help="HTTP API for the web UI and the iMessage webhook")
     _llm_flags(s)
     s.add_argument("--host", default="127.0.0.1")
@@ -161,6 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         from .ci import main as ci_main
 
         return ci_main(_use_llm(args), args.out, publish=not args.no_publish, repo_path=args.repo)
+
+    if args.cmd == "rollback":
+        from .rollback import main as rollback_main
+
+        if args.push and not args.github:
+            print("--push needs --github owner/repo", file=sys.stderr)
+            return 2
+        return rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github)
 
     if args.cmd == "serve":
         from .serve import serve
