@@ -84,6 +84,13 @@ To run it on every push to main: `templates/merge-gate-rollback.yml`. A PR opene
 revert PR could never pass it. Add a fine-grained PAT as secret `MERGE_GATE_TOKEN` (Contents + Pull
 requests: write, Commit statuses: read); the template uses `${{ secrets.MERGE_GATE_TOKEN || secrets.GITHUB_TOKEN }}`.
 
+### Fetch.ai agent: run the gate inside an ASI:One chat
+```bash
+pip install -e ".[agent]"
+export MERGE_GATE_AGENT_SEED="<long random phrase>"
+python -m agents.merge_gate_agent    # then follow agents/README.md to connect the mailbox and chat in ASI:One
+```
+
 ### 3. War Room UI (live, real gate) and the concept simulator
 ```bash
 python -m merge_gate serve           # terminal 1: the real gate's API on 127.0.0.1:8787

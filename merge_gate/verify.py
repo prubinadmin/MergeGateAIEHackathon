@@ -53,15 +53,19 @@ def llm_summary(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], own
 
 
 def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None,
-           use_subq: bool = False) -> VerdictReport:
+           use_subq: bool = False, steps: dict | None = None) -> VerdictReport:
     """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary. Owners' stored rules always run.
 
     use_subq=True lets SubQ Snap pick owners[0] among eligible owners and the urgency, when SUBQ_API_KEY is set
     (independent of use_llm). It only routes; decide() stays code.
+    steps: optional replacements for the specialist stages (the Fetch.ai agent team runs them as separate agents).
 
     config: "current" = the adopted gate version in gate_versions/, None = raw rules (used by the learner).
     on_stage(name, status, data): called as each real stage starts and finishes (the UI's live lanes).
+    steps: optional {"rules", "owners", "testgen"} -> callables that replace the in-process step (the Fetch.ai
+    agent team passes its specialists' results here). decide(), the summary and run_hash stay here.
     """
+    steps = steps or {}
     import time
 
     def emit(name: str, status: str, **data) -> None:
@@ -74,20 +78,20 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
         out = fn()
         return out, int((time.monotonic() - t0) * 1000)
 
-    raw, ms = timed("rules", lambda: list(check_rules(pr)))
+    raw, ms = timed("rules", lambda: list(steps.get("rules", check_rules)(pr)))
     evidence: list[Evidence] = raw
     emit("rules", "done", ms=ms, evidence=[e.__dict__ for e in raw])
 
     from .owners import resolve_owners
 
-    owners, ms = timed("owners", lambda: resolve_owners(pr))
+    owners, ms = timed("owners", lambda: steps.get("owners", resolve_owners)(pr))
     emit("owners", "done", ms=ms, owners=[o.__dict__ for o in owners])
 
     notes: list[str] = []
     if use_llm:
         from .testgen import independent_check
 
-        tg, ms = timed("testgen", lambda: independent_check(pr, timeout_s))
+        tg, ms = timed("testgen", lambda: steps.get("testgen", independent_check)(pr, timeout_s))
         evidence = evidence + tg.evidence
         if tg.error:
             notes.append(tg.error)
