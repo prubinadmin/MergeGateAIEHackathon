@@ -1,13 +1,8 @@
-# Copy to .github/workflows/merge-gate.yml in the repo you want to protect,
-# then make the "merge-gate" status a required check in branch protection.
+# Merge Gate on this repo's own PRs. Kept in sync with templates/merge-gate.yml (the copy for other repos).
 #
-# Secrets / variables:
-#   secrets.MUSE_API_KEY   optional: without it the gate runs rules + ownership only
-#   vars.OWNER_GITHUB      optional: {"owner@email": "github-login"}, lets a code owner override by approving on GitHub
-#
-# The PR's title and body are read from the event file by the gate, never interpolated into shell
-# (interpolating ${{ github.event.pull_request.body }} into `run:` lets anyone inject shell commands).
-
+# Known limit: on `pull_request`, a same-repo PR can edit this workflow file itself and post its own status.
+# Until this moves to pull_request_target with an untrusted checkout, treat merge-gate here as informational,
+# or protect .github/workflows with CODEOWNERS review.
 name: "Merge Gate"
 
 on:
@@ -15,6 +10,11 @@ on:
     types: [opened, synchronize, reopened]
   pull_request_review:
     types: [submitted]
+
+# One run per PR; a newer push or approval cancels the older run (and its LLM calls).
+concurrency:
+  group: merge-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -25,32 +25,40 @@ jobs:
   merge-gate:
     name: "Merge Gate"
     runs-on: ubuntu-latest
+    # Re-run on a review only when it approves (the owner-override path); comments don't re-run the gate.
+    if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
     steps:
       - name: Check out the repository under review
         uses: actions/checkout@v4
         with:
+          path: target    # the PR's files live here and are only ever read as data
           fetch-depth: 0  # full history: git blame on the base side, and origin/<base>
+          persist-credentials: false  # don't leave GITHUB_TOKEN in target/.git/config for PR code to read
 
       - name: Check out Merge Gate
         uses: actions/checkout@v4
         with:
           repository: prubinadmin/MergeGateAIEHackathon
-          path: .merge-gate
+          path: gate
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install
-        run: pip install pytest ./.merge-gate
+        run: pip install pytest ./gate
 
       - name: Run the gate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MUSE_API_KEY: ${{ secrets.MUSE_API_KEY }}
           OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
-        # -I: never import from the PR's checkout (cwd), or a PR could ship its own merge_gate/ that always passes
-        run: python -I -m merge_gate ci --out gate_result.json
+        # Run from an empty directory, never from the PR's checkout: the gate must not import the PR's merge_gate/
+        # (-I), read the PR's .env, or load the PR's gate_versions/ (a PR could ship one with every rule off).
+        run: |
+          mkdir -p "$RUNNER_TEMP/gate-run" && cd "$RUNNER_TEMP/gate-run"
+          python -I -m merge_gate ci --repo "$GITHUB_WORKSPACE/target" --out "$GITHUB_WORKSPACE/gate_result.json"
 
       - name: Keep the verdict report
         if: always()

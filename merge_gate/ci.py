@@ -56,13 +56,13 @@ def owner_approved(event: dict, report: VerdictReport) -> str:
     return login if login and login in owner_logins else ""
 
 
-def main(use_llm: bool, out_path: str = "gate_result.json", publish: bool = True) -> int:
+def main(use_llm: bool, out_path: str = "gate_result.json", publish: bool = True, repo_path: str = ".") -> int:
     from . import github
     from .store import log_report
     from .verify import verify
 
     event = _event()
-    pr, number = pr_from_event(event)
+    pr, number = pr_from_event(event, repo_path)
     report = verify(pr, use_llm=use_llm)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(report.to_json())
