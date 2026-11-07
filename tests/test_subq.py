@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import urllib.error
 
 import pytest
@@ -205,9 +206,17 @@ def test_400_is_not_retried(pr, monkeypatch):
 def test_no_key_means_no_call_and_no_history_walk(pr, monkeypatch):
     monkeypatch.delenv("SUBQ_API_KEY")
     calls = fake_api(monkeypatch, answers())
-    monkeypatch.setattr(subq, "_history", lambda pr: pytest.fail("git log walked without a key"))
+    real_run, argvs = subprocess.run, []
+
+    def spy_run(argv, *a, **kw):  # observe the git subprocess boundary; the real git still runs
+        argvs.append(list(argv))
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
     r = verify(pr, use_subq=True)
     assert calls == [] and (r.routed_by, r.urgency) == ("blame", "")
+    assert argvs, "verify ran no git at all: the spy is not observing the boundary"
+    assert not [a for a in argvs if "log" in a and "-L" in a], "git log -L walked without a key"
 
 
 def test_subq_is_independent_of_muse(pr, monkeypatch):
