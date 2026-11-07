@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-1-bad",
+  "repo": "target_repos/thefuck",
+  "base_ref": "444908ce1c17767ef4aaf9e0b4950497914f7f63",
+  "head_ref": "f5e8d81cd5b5eb0feefdd835bc31c2fbc239908b",
+  "title": "Simplify thefuck/rules/pip_unknown_command.py",
+  "issue_text": "Clean up thefuck/rules/pip_unknown_command.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "47046038+Caplinja@users.noreply.github.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 1,
+    "github_url": "",
+    "buggy_commit": "2ced7a7f33ae0bec3ffc7a43ce95330bdf6cfcb9",
+    "fixed_commit": "444908ce1c17767ef4aaf9e0b4950497914f7f63",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_pip_unknown_command.py::test_get_new_command"
+  }
+}

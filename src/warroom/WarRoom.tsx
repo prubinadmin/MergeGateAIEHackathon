@@ -4,7 +4,7 @@ import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
   API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, scanGithub, subscribeMode,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, scanGithub, subscribeMode, getReplies, githubFor, prUrl,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -150,6 +150,8 @@ export default function WarRoom() {
   const [paging, setPaging] = useState<Record<string, { status: 'sending' | 'sent' | 'error'; note: string }>>({});
 
   const cancelRun = useRef<(() => void) | null>(null);
+  const seenReplies = useRef<Set<string> | null>(null);
+  const uiReplies = useRef<{ text: string; at: number }[]>([]);
   useEffect(() => () => cancelRun.current?.(), []);
 
   const refreshStats = useCallback(() => getStats().then(setStats).catch(() => {}), []);
@@ -204,7 +206,8 @@ export default function WarRoom() {
     setReplyBusy(true);
     patch(id, (c) => ({ ...c, bubbles: [...c.bubbles, { from: 'owner', text, at: now() }] }));
     try {
-      const r = await postReply(id, text);
+      uiReplies.current.push({ text, at: Date.now() });
+      const r = await postReply(id, text, githubFor(id));
       patch(id, (c) => ({
         ...c,
         ownerBlocked: c.ownerBlocked || r.action === 'block_pr',
@@ -219,7 +222,7 @@ export default function WarRoom() {
   const page = async (id: string) => {
     setPaging((all) => ({ ...all, [id]: { status: 'sending', note: '' } }));
     try {
-      const m = await pageOwner(id, '');
+      const m = await pageOwner(id, prUrl(id), githubFor(id));
       const next = !m.sent
         ? { status: 'error' as const, note: 'Nothing sent: this PR has no code owner on file.' }
         : m.sent.startsWith('console-')
@@ -246,6 +249,34 @@ export default function WarRoom() {
       setGh((g) => ({ ...g, busy: false, note: (e as Error).message }));
     }
   };
+
+  // Show replies that arrive from a real phone (Sendblue webhook) in the phone panel. Live gate only.
+  useEffect(() => {
+    if (recorded) return;
+    const tick = async () => {
+      try {
+        const replies = await getReplies();
+        if (seenReplies.current === null) { seenReplies.current = new Set(replies.map((x) => x.hash)); return; }
+        for (const rec of replies) {
+          if (seenReplies.current.has(rec.hash)) continue;
+          seenReplies.current.add(rec.hash);
+          const raw = String(rec.data.raw || '');
+          const mine = uiReplies.current.findIndex((u) => u.text === raw && Date.now() - u.at < 15000);
+          if (mine >= 0) { uiReplies.current.splice(mine, 1); continue; }  // sent from this page: already shown
+          if (rec.data.action === 'rejected') continue;
+          patch(rec.data.pr_id, (c) => ({
+            ...c,
+            ownerBlocked: c.ownerBlocked || rec.data.action === 'block_pr',
+            bubbles: [...c.bubbles, { from: 'owner', text: `${raw}  (from ${rec.data.owner}'s phone)`, at: now() }],
+          }));
+          refreshStats();
+        }
+      } catch { /* gate unreachable: the banner already says so */ }
+    };
+    tick();
+    const h = setInterval(tick, 2500);
+    return () => clearInterval(h);
+  }, [recorded, refreshStats]);
 
   const pr = prs.find((p) => p.pr_id === sel);
   const c = cases[sel] || EMPTY;
@@ -326,9 +357,9 @@ export default function WarRoom() {
               <span className={`w-2 h-2 rounded-full ${r ? (r.verdict === 'BLOCK' ? 'bg-red-500' : r.verdict === 'PASS' ? 'bg-emerald-500' : 'bg-sky-500') : 'bg-zinc-600'}`} />
               {!r && running !== sel && 'Pick a PR and run the gate.'}
               {running === sel && 'Running the real gate on this PR…'}
-              {r?.verdict === 'BLOCK' && `BLOCK. The merge button was never reachable${c.ownerBlocked ? '; the owner confirmed from their phone' : ''}.`}
-              {r?.verdict === 'REVIEW' && 'REVIEW. The merge waits for the code owner.'}
-              {r?.verdict === 'PASS' && 'PASS. Nothing found; the owner gets an FYI.'}
+              {r?.verdict === 'BLOCK' && `Auto-rejected. The merge button was never reachable${c.ownerBlocked ? '; the owner confirmed from their phone' : ''}.`}
+              {r?.verdict === 'REVIEW' && (c.ownerBlocked ? 'The owner decided: BLOCK, from their phone.' : 'Owner decides. The merge waits for the engineer who wrote this code.')}
+              {r?.verdict === 'PASS' && 'Auto-passed. Nothing found; the owner gets an FYI.'}
             </div>
           </div>
 
@@ -347,6 +378,11 @@ export default function WarRoom() {
                     <Play size={14} /> {running === pr.pr_id ? 'Running…' : r ? 'Run again' : 'Run the gate'}
                   </button>
                   <button onClick={() => setShowDiff((s) => !s)} className="text-[12.5px] text-zinc-400 hover:text-zinc-200">{showDiff ? 'Hide diff' : 'View diff'}</button>
+                  {pr.github_url && (
+                    <a href={pr.github_url} target="_blank" rel="noreferrer" className="text-[12.5px] text-amber-300 hover:text-amber-200">
+                      Open on GitHub ↗
+                    </a>
+                  )}
                 </div>
                 {showDiff && (
                   <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-black/60 p-3 text-[11.5px] leading-relaxed">
@@ -365,7 +401,17 @@ export default function WarRoom() {
               <div className="flex items-center gap-4">
                 <span className={`rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(r?.verdict)}`}>{r?.verdict || '—'}</span>
                 <div className="text-[13.5px] text-zinc-300">
-                  {r ? (r.verdict === 'PASS' ? 'Every check passed.' : `${r.evidence.length} piece${r.evidence.length === 1 ? '' : 's'} of evidence. Sent to ${r.owners[0]?.name || 'the code owner'}.`) : 'No verdict yet.'}
+                  {r && (
+                    <div className={`mb-1 inline-block rounded px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider ${r.verdict === 'BLOCK' ? 'bg-red-500/20 text-red-300' : r.verdict === 'REVIEW' ? 'bg-sky-500/20 text-sky-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                      {r.verdict === 'BLOCK' ? 'AUTO-REJECTED' : r.verdict === 'REVIEW' ? 'OWNER DECIDES' : 'AUTO-PASSED'}
+                    </div>
+                  )}
+                  <div>
+                    {!r && 'No verdict yet.'}
+                    {r?.verdict === 'BLOCK' && `The evidence is conclusive, so the gate rejects it on its own. ${r.owners[0]?.name || 'The owner'} is told, with proof.`}
+                    {r?.verdict === 'REVIEW' && `Nothing is provably wrong, so the gate does not decide alone. ${r.owners[0]?.name || 'The owner'}, who wrote this code, decides by text.`}
+                    {r?.verdict === 'PASS' && `Every check passed. ${r.owners[0]?.name || 'The owner'} gets a one-line FYI.`}
+                  </div>
                   {r && <div className="mt-0.5 font-mono text-[11px] text-zinc-500">gate {r.gate_version} · decided by decide(), plain code, no AI</div>}
                 </div>
               </div>

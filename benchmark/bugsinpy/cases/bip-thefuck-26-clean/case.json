@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-26-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "7cb0388ed0845545e878b29783bbf8e901a02745",
+  "head_ref": "3739049fa5af46335e349c6c720516c2b84b141e",
+  "title": "Fix incorrect behaviour in thefuck/rules/vagrant_up.py",
+  "issue_text": "There is a bug in thefuck/rules/vagrant_up.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "michael.lee@reporo.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 26,
+    "github_url": "",
+    "buggy_commit": "7cb0388ed0845545e878b29783bbf8e901a02745",
+    "fixed_commit": "feb3eee2a08f0cba4552373d728509bc90b561ab",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_vagrant_up.py::test_get_new_command"
+  }
+}

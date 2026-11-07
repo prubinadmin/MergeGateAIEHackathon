@@ -145,6 +145,7 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
 
     use_subq=True lets SubQ Snap pick owners[0] among eligible owners and the urgency, when SUBQ_API_KEY is set
     (independent of use_llm). It only routes; decide() stays code.
+    steps: optional replacements for the specialist stages (the Fetch.ai agent team runs them as separate agents).
 
     config: "current" = the adopted gate version in gate_versions/, None = raw rules (used by the learner).
     on_stage(name, status, data): called as each real stage starts and finishes (the UI's live lanes).

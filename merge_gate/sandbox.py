@@ -23,6 +23,9 @@ from dataclasses import dataclass, field
 from .schema import run_hash
 
 GATE_TEST_DIR = "_gate_tests"
+# The interpreter that runs the code under test. Default: the gate's own. Set it when the target project
+# needs an older Python than the gate (the BugsInPy benchmark runs its 2019-era projects on 3.8).
+SANDBOX_PYTHON_ENV = "MERGE_GATE_SANDBOX_PYTHON"
 # Paths and locale only: enough for Python to find its own site-packages. Never keys or tokens.
 KEEP_ENV = (
     "PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE", "LANG", "PATHEXT", "COMSPEC",
@@ -113,7 +116,7 @@ def run_tests(
                 f.write(src)
         junit = os.path.join(work, ".gate-junit.xml")
         targets = [GATE_TEST_DIR] + (["."] if include_repo_tests else [])
-        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rootdir", work, f"--junitxml={junit}", *targets]
+        cmd = [os.environ.get(SANDBOX_PYTHON_ENV) or sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rootdir", work, f"--junitxml={junit}", *targets]
         try:
             proc = subprocess.run(cmd, cwd=work, env=_clean_env(work), capture_output=True, text=True, timeout=timeout_s, encoding="utf-8", errors="replace")
             log = (proc.stdout + proc.stderr)[-4000:]

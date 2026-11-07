@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-25-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "42a8b4f639269886e468762e6d100b6f01aad8ab",
+  "head_ref": "06a8530c690234be6e669f6737d2f51fd87f733c",
+  "title": "Fix incorrect behaviour in thefuck/rules/mkdir_p.py",
+  "issue_text": "There is a bug in thefuck/rules/mkdir_p.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "nils.winkler@sungard.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 25,
+    "github_url": "",
+    "buggy_commit": "42a8b4f639269886e468762e6d100b6f01aad8ab",
+    "fixed_commit": "298c04f89c081dc16c8653aa017ca85dd14bfad6",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_mkdir_p.py::test_get_new_command"
+  }
+}

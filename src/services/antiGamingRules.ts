@@ -147,7 +147,7 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
             const content = line.substring(1).trim();
             if (
               /(jest\.spyOn\([^)]+\)\.mockReturnValue|vi\.spyOn\([^)]+\)\.mockImplementation|patch\.object\([^)]+\.return_value)/.test(content) ||
-              /(sinon\.stub\([^)]+\)\.returns|mockReturnValueOnce\(true\))/.test(content)
+              /(sinon\.stub\([^)]+\)\.returns|mockReturnValueOnce\(true\)|monkeypatch\.setattr\(|Mock\(return_value=|MagicMock\()/.test(content)
             ) {
               violations.push({
                 ruleId: 'AG-04',
@@ -155,7 +155,7 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
                 severity: 'critical',
                 file: file.filename,
                 line: lineNum,
-                description: `Mocked target unit under test: "${content.slice(0, 70)}"`,
+                description: `Mocked target unit under test in PR diff: "${content.slice(0, 70)}"`,
                 snippet: line
               });
             }
@@ -388,7 +388,7 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
         };
 
         for (const line of hunk.lines) {
-          if (line.startsWith('+')) {
+          if (!line.startsWith('-')) {
             const raw = line.substring(1);
             const trimmed = raw.trim();
             const funcMatch = trimmed.match(/^(?:async\s+)?(?:def|function)\s+([a-zA-Z0-9_]+)\s*\(/);
@@ -397,8 +397,8 @@ export const ANTI_GAMING_RULES: AntiGamingRuleDef[] = [
               currentFuncName = funcMatch[1];
               currentFuncLine = lineNum;
               currentFuncBranches = 0;
-              firstBranchSnippet = line;
-            } else if (!trimmed.startsWith('#') && !trimmed.startsWith('//')) {
+              firstBranchSnippet = line.startsWith('+') ? line : '';
+            } else if (line.startsWith('+') && !trimmed.startsWith('#') && !trimmed.startsWith('//')) {
               const matches = trimmed.match(/\b(if|elif|else if|case|while|catch)\b|\?|&&|\|\|/g);
               if (matches) {
                 currentFuncBranches += matches.length;

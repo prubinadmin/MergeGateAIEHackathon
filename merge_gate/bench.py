@@ -40,6 +40,7 @@ def load_case(case_dir: str, bench_root: str = "benchmark") -> Case:
     with open(os.path.join(case_dir, "case.json"), encoding="utf-8") as f:
         d = json.load(f)
     label = Label(**d.pop("label"))
+    d.pop("source", None)  # provenance (e.g. the BugsInPy bug), not part of the PR
     if label.kind not in KINDS:
         raise ValueError(f"{case_dir}: unknown kind {label.kind!r}")
     if label.split not in ("train", "heldout"):

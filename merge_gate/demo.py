@@ -3,6 +3,8 @@
   demo-1  an agent "speeds up" Peter's apply_discount: drops the floor at zero and deletes the test for it
   demo-2  an outside contributor loosens an assert and adds a SQL string build in TAAZ's orders module
   demo-3  a clean refactor of Michael's cart module
+  demo-4  an agent adds cart_weight() and also edits Peter's pricing tests: nothing is provably wrong,
+          so the gate cannot decide alone -> REVIEW, and Michael (who wrote the cart) decides by text
 
 Author identities are simulated in commit metadata only; every commit is made today.
 """
@@ -94,6 +96,24 @@ def cart_count(items: list[tuple[str, int]]) -> int:
 '''
 
 
+CART_WEIGHT = '''
+
+def cart_weight(items: list[tuple[str, int]], grams: dict[str, int]) -> int:
+    """Total weight of the cart in grams: quantity times the item's weight, summed.
+
+    Items missing from `grams` raise KeyError.
+    """
+    return sum(qty * grams[sku] for sku, qty in items)
+'''
+
+# An extra test in Peter's file: not wrong, but this PR has no business editing pricing tests.
+PRICING_EXTRA_TEST = '''
+
+def test_discount_rounding_close():
+    assert abs(apply_discount(19.99, 15) - 16.9915) < 1e-9
+'''
+
+
 def _git(repo: str, *args: str, who: tuple[str, str] | None = None) -> None:
     env = dict(os.environ)
     if who:
@@ -114,7 +134,12 @@ def _commit(repo: str, files: dict[str, str], who: tuple[str, str], msg: str) ->
 def build_demo_repo(root: str) -> str:
     repo = os.path.join(root, "shop-service")
     if os.path.isdir(os.path.join(repo, ".git")):
-        return repo
+        has_demo4 = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", "pr/demo-4"], capture_output=True).returncode == 0
+        if has_demo4:
+            return repo
+        import shutil
+
+        shutil.rmtree(repo, ignore_errors=True)  # an older demo repo without demo-4: rebuild it
     os.makedirs(repo, exist_ok=True)
     _git(repo, "init", "-q", "-b", "main")
     _commit(repo, {"shop/__init__.py": "", "README.md": "# shop-service\n"}, MICHAEL, "init")
@@ -141,6 +166,13 @@ def build_demo_repo(root: str) -> str:
     _git(repo, "checkout", "-q", "main")
     _git(repo, "checkout", "-q", "-b", "pr/demo-3")
     _commit(repo, {"shop/cart.py": CART.replace("    n = 0\n    for _, qty in items:\n        n += qty\n    return n\n", "    return sum(qty for _, qty in items)\n")}, OUTSIDER, "cart: use sum()")
+
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "checkout", "-q", "-b", "pr/demo-4")
+    _commit(repo, {
+        "shop/cart.py": CART + CART_WEIGHT,
+        "tests/test_pricing.py": PRICING_TESTS + PRICING_EXTRA_TEST,
+    }, AGENT, "cart: add cart_weight; tidy pricing tests")
     _git(repo, "checkout", "-q", "main")
     return repo
 
@@ -156,4 +188,8 @@ def demo_prs(repo: str) -> list[PullRequest]:
         PullRequest("demo-3", repo, "main", "pr/demo-3", title="Use sum() in cart_count",
                     issue_text="Refactor cart_count to use sum(). No behaviour change.",
                     opened_by="An outside contributor"),
+        PullRequest("demo-4", repo, "main", "pr/demo-4", title="Add cart_weight",
+                    issue_text="Shipping needs the cart's total weight. Add cart_weight(items, grams) returning the "
+                               "total weight in grams (quantity times each item's weight).",
+                    opened_by="A coding agent"),
     ]

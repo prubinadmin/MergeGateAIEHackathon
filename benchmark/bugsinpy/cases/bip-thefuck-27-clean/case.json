@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-27-clean",
+  "repo": "target_repos/thefuck",
+  "base_ref": "bc6b107066d3f1e60b4cfcaa8cf6399e98cf1b1c",
+  "head_ref": "23e6568dfc307b31a0667aa32ce6f4e48bfa1c7d",
+  "title": "Fix incorrect behaviour in thefuck/rules/open.py",
+  "issue_text": "There is a bug in thefuck/rules/open.py: some inputs give the wrong result. Fix it without changing the public interface.",
+  "opened_by": "An outside contributor",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "diezcami@gmail.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 27,
+    "github_url": "",
+    "buggy_commit": "bc6b107066d3f1e60b4cfcaa8cf6399e98cf1b1c",
+    "fixed_commit": "1becd92b126a368d6e7d93aa8eea209414ce4aa2",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_open.py::test_get_new_command"
+  }
+}

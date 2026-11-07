@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-2-bad",
+  "repo": "target_repos/thefuck",
+  "base_ref": "78ef9eec88f43d5727986be2237f6e0e250cbbbc",
+  "head_ref": "9c1d5ec42c239066762ea8c57b2fc38d37de5665",
+  "title": "Simplify thefuck/utils.py",
+  "issue_text": "Clean up thefuck/utils.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "scorphus@gmail.com",
+    "split": "heldout"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 2,
+    "github_url": "",
+    "buggy_commit": "40ab4eb62db57627bff10cf029d29c94704086a2",
+    "fixed_commit": "78ef9eec88f43d5727986be2237f6e0e250cbbbc",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/test_utils.py::test_get_all_executables_pathsep"
+  }
+}

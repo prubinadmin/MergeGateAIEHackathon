@@ -119,12 +119,12 @@ def test_api_verify_message_reply(tmp_path, monkeypatch, fake_github, log_path):
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
 
     def post(path, body):
-        req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "Origin": "http://localhost:3000"})
         return json.loads(urllib.request.urlopen(req, timeout=120).read())
 
     try:
         demo = json.loads(urllib.request.urlopen(base + "/api/demo", timeout=60).read())
-        assert [d["pr_id"] for d in demo] == ["demo-1", "demo-2", "demo-3"]
+        assert [d["pr_id"] for d in demo][:3] == ["demo-1", "demo-2", "demo-3"]  # demo-4 (owner decides) may follow
         r = post("/api/verify", {"pr_id": "demo-1"})
         assert r["verdict"] == "BLOCK" and r["owners"][0]["name"] == "Peter"
         m = post("/api/message", {"pr_id": "demo-1"})

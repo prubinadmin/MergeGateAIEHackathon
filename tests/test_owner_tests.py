@@ -225,12 +225,13 @@ def test_rules_never_collide_and_can_be_removed(demo, monkeypatch, capsys):
     assert [e["id"] for e in gone] == [c.id] and [e["id"] for e in owner_tests.load_registry()] == [b.id]
 
 
-def _post(port, path, body):
+def _post(port, path, body, origin=None):
     import urllib.error
     import urllib.request
 
+    headers = {"Content-Type": "application/json", **({"Origin": origin} if origin else {})}
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read())
@@ -244,6 +245,7 @@ def test_reply_and_webhook_teach_and_forget_end_to_end(demo, monkeypatch):
     secret = "s" * 24
     monkeypatch.setenv("SENDBLUE_WEBHOOK_SECRET", secret)
     monkeypatch.setenv("OWNER_PHONES", json.dumps({PETER: "+15550100001"}))
+    monkeypatch.setenv("MERGE_GATE_AUTO_PAGE", "0")  # this test is about TEACH/FORGET, not the first page
     calls = model(monkeypatch, GOOD)
     state = serve.State(use_llm=False)
     state.notifier = imessage.ConsoleNotifier()  # never a real iMessage
@@ -253,10 +255,12 @@ def test_reply_and_webhook_teach_and_forget_end_to_end(demo, monkeypatch):
     try:
         # unauthenticated HTTP can never teach: no model call, nothing stored
         calls_before = len(calls)
-        out = _post(port, "/api/reply", {"pr_id": "demo-1", "text": SENTENCE})
+        ui = "http://localhost:3000"  # /api/reply only serves the War Room page
+        assert _post(port, "/api/reply", {"pr_id": "demo-1", "text": SENTENCE})["status"] == 403
+        out = _post(port, "/api/reply", {"pr_id": "demo-1", "text": SENTENCE}, origin=ui)
         assert out == {"status": 403, "error": "teach requires a verified owner (reply by iMessage)"}
         assert len(calls) == calls_before and owner_tests.load_registry() == []
-        assert _post(port, "/api/reply", {"pr_id": "demo-1", "text": "WHY"})["action"] == "send_text"
+        assert _post(port, "/api/reply", {"pr_id": "demo-1", "text": "WHY"}, origin=ui)["action"] == "send_text"
 
         hook = f"/api/sendblue?token={secret}"
         state.threads[imessage.phone_key("+15559999999")] = {"pr_id": "demo-1", "pr_url": "", "github": {}}

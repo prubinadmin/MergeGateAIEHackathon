@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-22-bad",
+  "repo": "target_repos/thefuck",
+  "base_ref": "e2e8b6fc865452b4cfc1bed70e5b9b49807258ae",
+  "head_ref": "fbe91fdde874eb7d00c0d1fb79a292523a3852ef",
+  "title": "Simplify thefuck/types.py",
+  "issue_text": "Clean up thefuck/types.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "nvbn.rm@gmail.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 22,
+    "github_url": "",
+    "buggy_commit": "faa7ee603057fa98c25507d30180c055d10d13d4",
+    "fixed_commit": "e2e8b6fc865452b4cfc1bed70e5b9b49807258ae",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/test_types.py::TestSortedCorrectedCommandsSequence::test_with_blank"
+  }
+}

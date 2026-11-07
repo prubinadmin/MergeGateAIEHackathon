@@ -1,0 +1,24 @@
+{
+  "pr_id": "bip-thefuck-31-bad",
+  "repo": "target_repos/thefuck",
+  "base_ref": "1285303363bc420bd7606bd5f808e3f2b4f0e83f",
+  "head_ref": "83e5474a4ac103f902b91ed527a0223710ba4b15",
+  "title": "Simplify thefuck/rules/git_diff_staged.py",
+  "issue_text": "Clean up thefuck/rules/git_diff_staged.py: simplify the implementation and remove special cases that look unnecessary. Behaviour must not change.",
+  "opened_by": "A coding agent",
+  "label": {
+    "kind": "logic_bug",
+    "true_verdict": "BLOCK",
+    "true_owner_email": "cartonmartin+git@gmail.com",
+    "split": "train"
+  },
+  "source": {
+    "dataset": "BugsInPy",
+    "project": "thefuck",
+    "bug": 31,
+    "github_url": "",
+    "buggy_commit": "66e2ec7e3f0d3f848c01d87bb3503b0ff90fc78a",
+    "fixed_commit": "1285303363bc420bd7606bd5f808e3f2b4f0e83f",
+    "ground_truth_test": "pytest -q -p no:cacheprovider tests/rules/test_git_diff_staged.py::test_get_new_command"
+  }
+}

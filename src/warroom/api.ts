@@ -4,6 +4,28 @@
 export const API_BASE: string =
   (import.meta as any).env?.VITE_MERGE_GATE_API || 'http://127.0.0.1:8787';
 
+// The demo PRs also live in a real GitHub repo; a BLOCK from the owner's phone fails that PR's merge-gate check.
+export const DEMO_GITHUB_REPO: string =
+  (import.meta as any).env?.VITE_DEMO_GITHUB_REPO || 'Michaelwei08/merge-gate-demo-shop';
+// demo PR id -> PR number in the GitHub demo repo (#4 there was a closed CI probe, so demo-4 is #5).
+const DEMO_PR_NUMBERS: Record<string, number> = { 'demo-1': 1, 'demo-2': 2, 'demo-3': 3, 'demo-4': 5 };
+export function githubFor(pr_id: string): { repo: string; number: number } | undefined {
+  const n = DEMO_PR_NUMBERS[pr_id];
+  return n && DEMO_GITHUB_REPO ? { repo: DEMO_GITHUB_REPO, number: n } : undefined;
+}
+export const prUrl = (pr_id: string) => {
+  const g = githubFor(pr_id);
+  return g ? `https://github.com/${g.repo}/pull/${g.number}` : '';
+};
+
+/** Owner replies recorded by the live gate (phone replies via /api/sendblue included). Live mode only. */
+export async function getReplies(): Promise<{ hash: string; data: { pr_id: string; owner: string; command: string; raw: string; action: string } }[]> {
+  const res = await fetch(API_BASE + '/api/log');
+  if (!res.ok) return [];
+  const body = await res.json();
+  return (body.records || []).filter((r: any) => r.kind === 'reply');
+}
+
 export type Verdict = 'BLOCK' | 'REVIEW' | 'PASS';
 
 export interface Evidence {
@@ -44,6 +66,7 @@ export interface DemoPr {
   opened_by: string;
   files: string[];
   diff: string;
+  github_url?: string;  // set when the case is a real GitHub PR (MERGE_GATE_DEMO_GITHUB)
 }
 
 export interface Stats {
