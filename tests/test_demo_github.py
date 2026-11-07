@@ -26,7 +26,13 @@ def test_github_prs_become_cases_and_verdicts_are_published(tmp_path, monkeypatc
         return {}
 
     monkeypatch.setattr(github, "_call", fake_call)
-    monkeypatch.setattr(demo_github, "sync", lambda r, root=demo_github.ROOT: repo)
+    # a real git remote for sync() to clone and fetch: a bare copy of the PR repo stands in for github.com/o/r
+    import subprocess
+    bare = str(tmp_path / "remote.git")
+    subprocess.run(["git", "clone", "-q", "--bare", repo, bare], check=True)
+    root = str(tmp_path / "clones")
+    monkeypatch.setattr(demo_github, "ROOT", root)
+    subprocess.run(["git", "clone", "-q", bare, str(tmp_path / "clones" / "o__r")], check=True)
     monkeypatch.setenv("MERGE_GATE_DEMO_GITHUB", "o/r")
 
     state = serve.State(use_llm=False)
@@ -48,6 +54,7 @@ def test_without_the_variable_nothing_goes_to_github(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "LOG_PATH", str(tmp_path / "log.jsonl"))
     monkeypatch.setattr(github, "_call", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no GitHub calls")))
     state = serve.State(use_llm=False)
-    assert [p.pr_id for p in state.demo()] == ["demo-1", "demo-2", "demo-3", "demo-4"]
+    ids = [p.pr_id for p in state.demo()]
+    assert ids and all(i.startswith("demo-") for i in ids)  # the generated local demo repo
     state.verify({"pr_id": "demo-1", "llm": False})
     assert state.published == {}

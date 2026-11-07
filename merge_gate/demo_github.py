@@ -30,8 +30,9 @@ def _git(repo_dir: str, *args: str) -> str:
                           errors="replace", check=True).stdout
 
 
-def sync(repo: str, root: str = ROOT) -> str:
+def sync(repo: str, root: str | None = None) -> str:
     """Clone once, then fetch main and every PR head. Returns the local clone path."""
+    root = root or ROOT
     path = os.path.join(root, repo.replace("/", "__"))
     if not os.path.isdir(os.path.join(path, ".git")):
         os.makedirs(root, exist_ok=True)
