@@ -329,9 +329,9 @@ export default function WarRoom() {
               <span className={`w-2 h-2 rounded-full ${r ? (r.verdict === 'BLOCK' ? 'bg-red-500' : r.verdict === 'PASS' ? 'bg-emerald-500' : 'bg-sky-500') : 'bg-zinc-600'}`} />
               {!r && running !== sel && 'Pick a PR and run the gate.'}
               {running === sel && 'Running the real gate on this PR…'}
-              {r?.verdict === 'BLOCK' && `BLOCK. The merge button was never reachable${c.ownerBlocked ? '; the owner confirmed from their phone' : ''}.`}
-              {r?.verdict === 'REVIEW' && 'REVIEW. The merge waits for the code owner.'}
-              {r?.verdict === 'PASS' && 'PASS. Nothing found; the owner gets an FYI.'}
+              {r?.verdict === 'BLOCK' && `Auto-rejected. The merge button was never reachable${c.ownerBlocked ? '; the owner confirmed from their phone' : ''}.`}
+              {r?.verdict === 'REVIEW' && (c.ownerBlocked ? 'The owner decided: BLOCK, from their phone.' : 'Owner decides. The merge waits for the engineer who wrote this code.')}
+              {r?.verdict === 'PASS' && 'Auto-passed. Nothing found; the owner gets an FYI.'}
             </div>
           </div>
 
@@ -368,7 +368,17 @@ export default function WarRoom() {
               <div className="flex items-center gap-4">
                 <span className={`rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(r?.verdict)}`}>{r?.verdict || '—'}</span>
                 <div className="text-[13.5px] text-zinc-300">
-                  {r ? (r.verdict === 'PASS' ? 'Every check passed.' : `${r.evidence.length} piece${r.evidence.length === 1 ? '' : 's'} of evidence. Sent to ${r.owners[0]?.name || 'the code owner'}.`) : 'No verdict yet.'}
+                  {r && (
+                    <div className={`mb-1 inline-block rounded px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider ${r.verdict === 'BLOCK' ? 'bg-red-500/20 text-red-300' : r.verdict === 'REVIEW' ? 'bg-sky-500/20 text-sky-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                      {r.verdict === 'BLOCK' ? 'AUTO-REJECTED' : r.verdict === 'REVIEW' ? 'OWNER DECIDES' : 'AUTO-PASSED'}
+                    </div>
+                  )}
+                  <div>
+                    {!r && 'No verdict yet.'}
+                    {r?.verdict === 'BLOCK' && `The evidence is conclusive, so the gate rejects it on its own. ${r.owners[0]?.name || 'The owner'} is told, with proof.`}
+                    {r?.verdict === 'REVIEW' && `Nothing is provably wrong, so the gate does not decide alone. ${r.owners[0]?.name || 'The owner'}, who wrote this code, decides by text.`}
+                    {r?.verdict === 'PASS' && `Every check passed. ${r.owners[0]?.name || 'The owner'} gets a one-line FYI.`}
+                  </div>
                   {r && <div className="mt-0.5 font-mono text-[11px] text-zinc-500">gate {r.gate_version} · decided by decide(), plain code, no AI</div>}
                 </div>
               </div>
