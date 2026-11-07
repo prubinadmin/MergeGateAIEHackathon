@@ -223,6 +223,28 @@ def _teach_or_forget(state: State, phone: str, r: VerdictReport, note: str, acti
         state.notifier.send(phone, state.forget(r, note))
 
 
+def _scan_github(state: State, body: dict) -> tuple[int, dict]:
+    """POST /api/github: resolve + clone a live public GitHub PR and register it as a gate PR (then /api/run it)."""
+    from . import github_pr
+
+    query = (body.get("query") or "").strip()
+    if not query:
+        return 400, {"error": "query required: a repo name (requests), owner/repo, owner/repo#N or a PR URL"}
+    try:
+        resolved = github_pr.resolve(query)
+        pr = github_pr.materialize(resolved, timeout_s=600)  # big repos: vllm needs > 3 min on venue Wi-Fi
+    except Exception as e:  # noqa: BLE001 - the UI shows the reason verbatim
+        return 400, {"error": f"{type(e).__name__}: {e}"}
+    with state.lock:
+        state.prs[pr.pr_id] = pr
+        state.reports.pop(pr.pr_id, None)
+    return 200, {
+        "pr_id": pr.pr_id, "title": pr.title, "issue_text": pr.issue_text, "opened_by": pr.opened_by,
+        "files": pr.changed_files(), "diff": pr.diff()[:200_000], "url": resolved.html_url,
+        "repo": resolved.full_name, "number": resolved.number,
+    }
+
+
 def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def _origin_ok(self) -> bool:
@@ -361,25 +383,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 
         def _github(self, body: dict) -> None:
-            """Resolve + clone a live public GitHub PR and register it as a gate PR (then /api/run it)."""
-            from . import github_pr
-
-            query = (body.get("query") or "").strip()
-            if not query:
-                return self._send(400, {"error": "query required: a repo name (vllm), owner/repo, owner/repo#N or a PR URL"})
-            try:
-                resolved = github_pr.resolve(query)
-                pr = github_pr.materialize(resolved)
-            except Exception as e:  # noqa: BLE001 - the UI shows the reason verbatim
-                return self._send(400, {"error": f"{type(e).__name__}: {e}"})
-            with state.lock:
-                state.prs[pr.pr_id] = pr
-                state.reports.pop(pr.pr_id, None)
-            return self._send(200, {
-                "pr_id": pr.pr_id, "title": pr.title, "issue_text": pr.issue_text, "opened_by": pr.opened_by,
-                "files": pr.changed_files(), "diff": pr.diff()[:200_000], "url": resolved.html_url,
-                "repo": resolved.full_name, "number": resolved.number,
-            })
+            return self._send(*_scan_github(state, body))
 
         def do_POST(self) -> None:
             if not self._origin_ok():
