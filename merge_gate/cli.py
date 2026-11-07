@@ -98,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     _llm_flags(ci)
     ci.add_argument("--out", default="gate_result.json")
     ci.add_argument("--no-publish", action="store_true", help="do not call the GitHub API")
+    ci.add_argument("--repo", default=".", help="path to the PR checkout; run the gate from a different, clean directory")
 
     s = sub.add_parser("serve", help="HTTP API for the web UI and the iMessage webhook")
     _llm_flags(s)
@@ -159,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "ci":
         from .ci import main as ci_main
 
-        return ci_main(_use_llm(args), args.out, publish=not args.no_publish)
+        return ci_main(_use_llm(args), args.out, publish=not args.no_publish, repo_path=args.repo)
 
     if args.cmd == "serve":
         from .serve import serve
