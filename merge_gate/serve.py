@@ -1,7 +1,9 @@
 """`python -m merge_gate serve`: HTTP API over the real gate, for the web UI and the iMessage webhook.
 
   GET  /api/health
-  GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo)
+  GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo; or, with
+                                      MERGE_GATE_DEMO_GITHUB=owner/name, that repo's open PRs, and each
+                                      verdict is published back to the PR)
   POST /api/verify   {"pr_id": "demo-1"}                 -> verdict report (real rules, blame, sandbox, Muse)
        or          {"repo_path", "base_ref", "head_ref", "issue_text", "title", "opened_by", "pr_id"}
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
@@ -48,8 +50,14 @@ class State:
         self.notifier = imessage.notifier_from_env()
         # phone_key -> the PR that number was last messaged about (so a bare "BLOCK" reply has a target)
         self.threads: dict[str, dict] = {}
+        # MERGE_GATE_DEMO_GITHUB=owner/name: demo cases are that repo's open PRs, and verdicts go back to them.
+        self.github_repo = os.environ.get("MERGE_GATE_DEMO_GITHUB", "").strip()
+        self.github_prs: dict[str, object] = {}  # pr_id -> demo_github.GithubPr
+        self.published: dict[str, str] = {}  # pr_id -> what was posted to GitHub (or why not)
 
-    def demo(self) -> list[PullRequest]:
+    def demo(self, refresh: bool = False) -> list[PullRequest]:
+        if self.github_repo:
+            return self._github_demo(refresh)
         with self.lock:
             if not self._demo_ready:
                 repo = build_demo_repo(DEMO_ROOT)
@@ -57,6 +65,36 @@ class State:
                     self.prs[pr.pr_id] = pr
                 self._demo_ready = True
         return [p for k, p in self.prs.items() if k.startswith("demo-")]
+
+    def _github_demo(self, refresh: bool) -> list[PullRequest]:
+        from . import demo_github
+
+        with self.lock:
+            if refresh or not self._demo_ready:
+                path = demo_github.sync(self.github_repo)
+                found = demo_github.open_prs(self.github_repo, path)
+                self.github_prs = {g.pr.pr_id: g for g in found}
+                for k in [k for k in self.prs if k.startswith("demo-")]:
+                    del self.prs[k]
+                for g in found:
+                    self.prs[g.pr.pr_id] = g.pr
+                self._demo_ready = True
+            return [self.github_prs[k].pr for k in self.github_prs]
+
+    def publish(self, report: VerdictReport) -> None:
+        """Post the verdict to the real GitHub PR (merge-gate status + comment), when this case is one."""
+        g = self.github_prs.get(report.pr_id)
+        if not g:
+            return
+        from . import github
+
+        try:
+            github.publish(report, self.github_repo, g.number, sha=g.sha)
+            note = f"posted {github.STATE_FOR[report.verdict]} to {g.url}"
+        except github.GitHubError as e:
+            note = f"not posted to GitHub: {e}"
+        self.published[report.pr_id] = note
+        store.append("github_publish", {"pr_id": report.pr_id, "note": note})
 
     def verify(self, body: dict, on_stage=None) -> VerdictReport:
         from .verify import verify
@@ -83,6 +121,7 @@ class State:
         with self.lock:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
+        self.publish(report)
         return report
 
     def teach(self, report: VerdictReport, sentence: str) -> str:
@@ -231,8 +270,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/demo":
                     return self._send(200, [
                         {"pr_id": p.pr_id, "title": p.title, "issue_text": p.issue_text, "opened_by": p.opened_by,
-                         "files": p.changed_files(), "diff": p.diff()}
-                        for p in state.demo()
+                         "files": p.changed_files(), "diff": p.diff(),
+                         "github_url": getattr(state.github_prs.get(p.pr_id), "url", "")}
+                        for p in state.demo(refresh=True)
                     ])
                 if self.path == "/api/log":
                     ok, bad = store.verify_chain()
