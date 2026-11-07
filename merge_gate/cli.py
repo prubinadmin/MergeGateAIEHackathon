@@ -5,6 +5,7 @@
     python -m merge_gate validate report.json               # check a report against the contract
     python -m merge_gate notify report.json --reply "WHY"   # dry-run the owner message and a reply
     python -m merge_gate bench --split heldout [--stub]     # score the gate on the benchmark
+    python -m merge_gate bench --baseline llm|codeowners    # score a baseline on the same cases
 """
 
 from __future__ import annotations
@@ -55,6 +56,8 @@ def _llm_flags(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--llm", dest="llm", action="store_true", default=None,
                    help="force Muse Spark tests and summary (default: on when MUSE_API_KEY is set)")
     g.add_argument("--no-llm", dest="llm", action="store_false", help="rules and ownership only, no API calls")
+    parser.add_argument("--no-subq", dest="subq", action="store_false", default=True,
+                        help="never call SubQ for routing (default: on when SUBQ_API_KEY is set, independent of Muse)")
 
 
 def _use_llm(args: argparse.Namespace) -> bool:
@@ -63,6 +66,15 @@ def _use_llm(args: argparse.Namespace) -> bool:
 
     on = has_key() if args.llm is None else args.llm
     print(f"[merge-gate] Muse Spark {'ON' if on else 'OFF (no MUSE_API_KEY; rules + ownership only)'}", file=sys.stderr)
+    return on
+
+
+def _use_subq(args: argparse.Namespace) -> bool:
+    """SubQ routing runs iff SUBQ_API_KEY is present and --no-subq was not given; independent of Muse."""
+    from .subq import has_key
+
+    on = getattr(args, "subq", False) and has_key()
+    print(f"[merge-gate] SubQ routing {'ON' if on else 'OFF'}", file=sys.stderr)
     return on
 
 
@@ -116,6 +128,16 @@ def main(argv: list[str] | None = None) -> int:
     ci.add_argument("--no-publish", action="store_true", help="do not call the GitHub API")
     ci.add_argument("--repo", default=".", help="path to the PR checkout; run the gate from a different, clean directory")
 
+    rb = sub.add_parser("rollback", help="re-verify a merged commit; on BLOCK make a revert branch (and PR with --push)")
+    rb.add_argument("sha")
+    rb.add_argument("--repo", default=".", help="path to the repo; run the gate from a different, clean directory")
+    rb.add_argument("--push", action="store_true", help="push the revert branch and open a PR (needs --github, GITHUB_TOKEN)")
+    rb.add_argument("--github", default="", help="owner/repo on GitHub")
+    rb.add_argument("--base", default=None, help="verify <base>..<sha> as one diff (a push's `before`; all-zero -> <sha>^1)")
+    rb.add_argument("--respect-override", action=argparse.BooleanOptionalAction, default=True,
+                    help="skip a PR a code owner overrode (looked up on GitHub; default on)")
+    _llm_flags(rb)
+
     s = sub.add_parser("serve", help="HTTP API for the web UI and the iMessage webhook")
     _llm_flags(s)
     s.add_argument("--host", default="127.0.0.1")
@@ -132,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--root", default="benchmark")
     b.add_argument("--split", choices=["train", "heldout"], default=None)
     b.add_argument("--stub", action="store_true")
+    b.add_argument("--baseline", choices=["llm", "codeowners"], default=None,
+                   help="score a baseline instead of the gate (llm: Muse Spark reads the diff; codeowners: folder routing)")
     _llm_flags(b)
 
     ot = sub.add_parser("owner-tests", help="list or remove the rules owners taught the gate by iMessage")
@@ -153,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         from .bench import load_case
         from .verify import verify
 
-        print(verify(load_case(args.case).pr, use_llm=_use_llm(args)).to_json())
+        print(verify(load_case(args.case).pr, use_llm=_use_llm(args), use_subq=_use_subq(args)).to_json())
         return 0
 
     if args.cmd == "validate":
@@ -183,12 +207,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "ci":
         from .ci import main as ci_main
 
-        return ci_main(_use_llm(args), args.out, publish=not args.no_publish, repo_path=args.repo)
+        return ci_main(_use_llm(args), args.out, publish=not args.no_publish, use_subq=_use_subq(args),
+                       repo_path=args.repo)
+
+    if args.cmd == "rollback":
+        from .rollback import main as rollback_main
+
+        return rollback_main(args.sha, args.repo, _use_llm(args), args.push, args.github, args.base, args.respect_override)
 
     if args.cmd == "serve":
         from .serve import serve
 
-        serve(args.host, args.port, _use_llm(args))
+        serve(args.host, args.port, _use_llm(args), _use_subq(args))
         return 0
 
     if args.cmd == "log":
@@ -215,8 +245,8 @@ def main(argv: list[str] | None = None) -> int:
         repo = build_demo_repo(root)
         prs = demo_prs(repo)
         with ThreadPoolExecutor(max_workers=len(prs)) as pool:
-            use = _use_llm(args)
-            results = list(pool.map(lambda p: verify(p, use_llm=use), prs))
+            use, subq_on = _use_llm(args), _use_subq(args)
+            results = list(pool.map(lambda p: verify(p, use_llm=use, use_subq=subq_on), prs))
         for pr, r in zip(prs, results):
             print(f"===== {pr.pr_id}: {pr.title} -> {r.verdict} (route to {r.owners[0].name if r.owners else '?'})")
             print(format_message(r))
@@ -246,12 +276,20 @@ def main(argv: list[str] | None = None) -> int:
         if not cases:
             print(f"no cases under {args.root}/cases", file=sys.stderr)
             return 1
+        if args.baseline:
+            from .baselines import METRICS, run as run_baseline
+
+            s = score(cases, run_baseline(args.baseline, cases))
+            keep = ("cases", "bad", "clean", *METRICS[args.baseline], "missing_reports")
+            print(json.dumps({"baseline": args.baseline, **{k: s[k] for k in keep}}, indent=2))
+            return 0
+
         from concurrent.futures import ThreadPoolExecutor
 
         use = False if args.stub else _use_llm(args)
 
         def run(c):
-            return stub_report(c.pr.pr_id) if args.stub else verify(c.pr, use_llm=use)
+            return stub_report(c.pr.pr_id) if args.stub else verify(c.pr, use_llm=use, use_subq=False)  # benchmark: no routing calls
 
         with ThreadPoolExecutor(max_workers=6) as pool:
             reports = {c.pr.pr_id: r for c, r in zip(cases, pool.map(run, cases))}

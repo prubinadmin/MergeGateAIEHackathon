@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr15",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/15",
+  "title": "2027 holidays and business_days_between",
+  "issue_text": "Delivery estimates for orders placed in late 2026 must skip the 2027 New Year and Christmas holidays. Also add business_days_between(start, end) for the SLA report: business days after start up to and including end, 0 if end is not after start.",
+  "opened_by": "agent:autofix-bot",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "fatima@example.com",
+    "split": "heldout"
+  }
+}

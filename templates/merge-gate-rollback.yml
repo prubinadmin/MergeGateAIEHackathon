@@ -1,0 +1,70 @@
+# Copy to .github/workflows/merge-gate-rollback.yml in the repo you want to protect.
+#
+# Every push to main is re-verified by Merge Gate as one diff over the whole pushed range
+# (base = github.event.before, head = github.sha; a new branch's all-zero `before` falls back to <sha>^1).
+# On BLOCK it pushes a branch merge-gate/revert-<sha> with a revert commit and opens a revert PR.
+# It never pushes to main and never force-pushes: merging the revert PR is a human decision.
+# Skipped: Merge Gate's own reverts, and PRs whose `merge-gate` status a code owner overrode.
+#
+# Secrets:
+#   MUSE_API_KEY      optional; without it the gate runs rules + ownership only.
+#   MERGE_GATE_TOKEN  recommended. A PR opened with the Actions GITHUB_TOKEN does NOT trigger
+#                     pull_request workflows, so if merge-gate is a required check the revert PR could
+#                     never get a status and could never be merged. Use a fine-grained PAT with
+#                     Contents: write, Pull requests: write (and Commit statuses: read) on this repo.
+#                     Without it the job falls back to GITHUB_TOKEN.
+# Repo setting (GITHUB_TOKEN fallback only): Actions > General > "Allow GitHub Actions to create and
+# approve pull requests" must be on.
+
+name: "Merge Gate rollback"
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: merge-gate-rollback-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # push the merge-gate/revert-* branch
+  pull-requests: write   # open the revert PR; find the PR a commit came from
+  statuses: read         # was that PR's merge-gate status owner-overridden?
+
+jobs:
+  rollback:
+    name: "Merge Gate rollback"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository that was pushed
+        uses: actions/checkout@v4
+        with:
+          path: target    # the pushed files live here and are only ever read as data
+          fetch-depth: 0  # full history: first parent and git blame
+          persist-credentials: false  # the gate pushes with the token from env, not from target/.git/config
+
+      - name: Check out Merge Gate
+        uses: actions/checkout@v4
+        with:
+          repository: prubinadmin/MergeGateAIEHackathon
+          path: gate
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install pytest ./gate
+
+      - name: Re-verify the pushed range; open a revert PR on BLOCK
+        env:
+          GITHUB_TOKEN: ${{ secrets.MERGE_GATE_TOKEN || secrets.GITHUB_TOKEN }}
+          MUSE_API_KEY: ${{ secrets.MUSE_API_KEY }}
+        # Run from an empty directory, never from the checkout: the gate must not import the repo's merge_gate/
+        # (-I), read its .env, or load its gate_versions/. github.sha, github.event.before and
+        # github.repository are not user-controlled.
+        run: |
+          mkdir -p "$RUNNER_TEMP/gate-run" && cd "$RUNNER_TEMP/gate-run"
+          python -I -m merge_gate rollback "${{ github.sha }}" --base "${{ github.event.before }}" \
+            --repo "$GITHUB_WORKSPACE/target" --push --github "${{ github.repository }}"

@@ -1,0 +1,15 @@
+{
+  "pr_id": "pr09",
+  "repo": "target_repo",
+  "base_ref": "main",
+  "head_ref": "pr/09",
+  "title": "Show line totals on printed invoices",
+  "issue_text": "Customers want to see each line's total (unit price x quantity) on the printed invoice.",
+  "opened_by": "agent:autofix-bot",
+  "label": {
+    "kind": "clean",
+    "true_verdict": "PASS",
+    "true_owner_email": "ada@example.com",
+    "split": "train"
+  }
+}
