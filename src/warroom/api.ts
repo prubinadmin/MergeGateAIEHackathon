@@ -75,7 +75,7 @@ export interface Stats {
   llm: boolean;
 }
 
-export type StageName = 'rules' | 'owners' | 'testgen' | 'decide' | 'summary';
+export type StageName = 'rules' | 'owners' | 'testgen' | 'decide' | 'summary' | 'page';
 export type StageStatus = 'idle' | 'start' | 'done' | 'skipped';
 
 export interface StageEvent {
