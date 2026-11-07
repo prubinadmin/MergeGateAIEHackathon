@@ -52,8 +52,11 @@ def llm_summary(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], own
     return text[:400] if text else template_summary(pr, verdict, evidence)
 
 
-def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None) -> VerdictReport:
+def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None,
+           use_subq: bool | None = None) -> VerdictReport:
     """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary.
+
+    use_subq: SubQ Snap picks owners[0] and the urgency (None = same as use_llm). It only routes; decide() stays code.
 
     config: "current" = the adopted gate version in gate_versions/, None = raw rules (used by the learner).
     on_stage(name, status, data): called as each real stage starts and finishes (the UI's live lanes).
@@ -107,6 +110,24 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
     verdict = decide(evidence)
     emit("decide", "done", ms=0, verdict=verdict, gate_version=gate_version)
 
+    routing: dict = {}
+    if (use_llm if use_subq is None else use_subq):
+        from . import subq
+
+        def route() -> dict:
+            out: dict = {}
+            if len(owners) >= 2:
+                chosen, conf = subq.choose_owner(pr, owners)
+                if conf is not None:
+                    owners.remove(chosen)
+                    owners.insert(0, chosen)
+                    out.update(routed_by="subq", route_confidence=conf)
+            out["urgency"], out["urgency_p"] = subq.urgency(pr, evidence)
+            return out
+
+        routing, ms = timed("routing", route)
+        emit("routing", "done", ms=ms, to=owners[0].__dict__ if owners else None, **routing)
+
     if use_llm:
         summary, ms = timed("summary", lambda: llm_summary(pr, verdict, evidence, owners[0] if owners else None))
     else:
@@ -120,6 +141,7 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
         owners=owners,
         summary=summary + (f" [{'; '.join(notes)}]" if notes else ""),
         gate_version=gate_version,
+        **routing,
     )
     report.run_hash = run_hash(
         {

@@ -47,6 +47,11 @@ class VerdictReport:
     summary: str = ""
     run_hash: str = ""
     gate_version: str = "v1"
+    # routing (SubQ Snap); optional so older reports still load
+    routed_by: str = "blame"  # "subq" when SubQ picked owners[0]
+    route_confidence: float | None = None  # SubQ's confidence in owners[0]
+    urgency: str = ""  # "page" | "fyi"; "" when not assessed
+    urgency_p: float | None = None  # SubQ's probability of paging; None = plain-code fallback
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -65,6 +70,10 @@ class VerdictReport:
             summary=d.get("summary", ""),
             run_hash=d.get("run_hash", ""),
             gate_version=d.get("gate_version", "v1"),
+            routed_by=d.get("routed_by", "blame"),
+            route_confidence=d.get("route_confidence"),
+            urgency=d.get("urgency", ""),
+            urgency_p=d.get("urgency_p"),
         )
 
 
