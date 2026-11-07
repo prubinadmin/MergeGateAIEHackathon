@@ -53,6 +53,10 @@ export interface Report {
   summary: string;
   run_hash: string;
   gate_version: string;
+  routed_by?: 'subq' | 'blame';
+  route_confidence?: number | null;
+  urgency?: '' | 'page' | 'fyi';
+  urgency_p?: number | null;
 }
 
 export interface DemoPr {
@@ -77,7 +81,7 @@ export interface Stats {
   llm: boolean;
 }
 
-export type StageName = 'rules' | 'owners' | 'testgen' | 'decide' | 'summary';
+export type StageName = 'rules' | 'owners' | 'testgen' | 'decide' | 'routing' | 'summary' | 'page';
 export type StageStatus = 'idle' | 'start' | 'done' | 'skipped';
 
 export interface StageEvent {

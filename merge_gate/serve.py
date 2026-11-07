@@ -38,8 +38,9 @@ DEMO_ROOT = os.path.join("runs", "demo")
 
 
 class State:
-    def __init__(self, use_llm: bool) -> None:
+    def __init__(self, use_llm: bool, use_subq: bool = False) -> None:
         self.use_llm = use_llm
+        self.use_subq = use_subq  # SubQ routing; on only when SUBQ_API_KEY is set (decided by the CLI)
         self.reports: dict[str, VerdictReport] = {}
         self.prs: dict[str, PullRequest] = {}
         self.lock = threading.Lock()
@@ -48,6 +49,9 @@ class State:
         self.notifier = imessage.notifier_from_env()
         # phone_key -> the PR that number was last messaged about (so a bare "BLOCK" reply has a target)
         self.threads: dict[str, dict] = {}
+        # agentic paging: every verdict texts the code owner on its own (MERGE_GATE_AUTO_PAGE=0 turns it off)
+        self.auto_page = os.environ.get("MERGE_GATE_AUTO_PAGE", "1") != "0"
+        self._paged: set[tuple[str, str]] = set()  # (pr_id, run_hash): never re-page an identical result
 
     def demo(self) -> list[PullRequest]:
         with self.lock:
@@ -58,7 +62,9 @@ class State:
                 self._demo_ready = True
         return [p for k, p in self.prs.items() if k.startswith("demo-")]
 
-    def verify(self, body: dict, on_stage=None) -> VerdictReport:
+    def verify(self, body: dict, on_stage=None, steps=None, source: str = "api",
+               started: float | None = None) -> VerdictReport:
+        """started: time.monotonic() when the run began, if earlier work (the agent fan-out) counts toward ms."""
         from .verify import verify
 
         if "repo_path" in body:
@@ -77,12 +83,22 @@ class State:
             if pr is None:
                 raise KeyError(f"unknown pr_id {body.get('pr_id')!r}")
         use_llm = body.get("llm", self.use_llm)
-        t0 = time.monotonic()
-        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage)
-        store.log_report(report, source="api", ms=int((time.monotonic() - t0) * 1000), llm=bool(use_llm))
+        use_subq = self.use_subq and body.get("subq", True)  # a request can turn SubQ off, never on without the server
+        t0 = started if started is not None else time.monotonic()
+        report = verify(pr, use_llm=bool(use_llm), on_stage=on_stage, steps=steps, use_subq=bool(use_subq))
+        store.log_report(report, source=source, ms=int((time.monotonic() - t0) * 1000), llm=bool(use_llm))
         with self.lock:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
+        if self.auto_page and report.owners:
+            if on_stage:
+                on_stage("page", "start", {})
+            try:
+                out = self.page(report, body.get("pr_url", ""), body.get("github") or {}, dedupe=True)
+            except Exception as e:  # noqa: BLE001 - a failed text must never fail the verdict
+                out = {"error": f"{type(e).__name__}: {e}"}
+            if on_stage:
+                on_stage("page", "done", out)
         return report
 
     def teach(self, report: VerdictReport, sentence: str) -> str:
@@ -108,6 +124,29 @@ class State:
         with self.lock:
             self.reports.clear()  # any PR may have carried that rule's evidence
         return "Forgot: " + "; ".join(f'{e["test_name"]} ("{e["sentence"]}")' for e in gone)
+
+    def page(self, r: VerdictReport, pr_url: str = "", github: dict | None = None, dedupe: bool = False) -> dict:
+        """Text owners[0] the verdict (full page, or one-line FYI on PASS) and open the reply thread."""
+        text = format_message(r, pr_url)
+        out = {"to": r.owners[0].name if r.owners else None, "text": text, "sent": None}
+        if not r.owners:
+            return {**out, "skipped": "no code owner"}
+        phone = imessage.phone_for(r.owners[0].email)
+        if not phone:
+            return {**out, "error": f"no phone on file for {r.owners[0].email}"}
+        key = (r.pr_id, r.run_hash)
+        if dedupe and key in self._paged:
+            # Already texted (e.g. auto-paged right after the run). Still attach what the caller knows,
+            # such as the GitHub PR, so the owner's BLOCK reaches that PR's check.
+            thread = self.threads.setdefault(imessage.phone_key(phone), {"pr_id": r.pr_id, "pr_url": "", "github": {}})
+            if thread.get("pr_id") == r.pr_id:
+                thread["pr_url"] = pr_url or thread.get("pr_url", "")
+                thread["github"] = github or thread.get("github") or {}
+            return {**out, "skipped": "already paged for this exact result", "sent": "already sent"}
+        out["sent"] = self.notifier.send(phone, text)
+        self._paged.add(key)
+        self.threads[imessage.phone_key(phone)] = {"pr_id": r.pr_id, "pr_url": pr_url, "github": github or {}}
+        return out
 
     def report(self, pr_id: str) -> VerdictReport:
         r = self.reports.get(pr_id)
@@ -219,7 +258,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                         "blocked": sum(v["verdict"] == "BLOCK" for v in verdicts),
                         "review": sum(v["verdict"] == "REVIEW" for v in verdicts),
                         "passed": sum(v["verdict"] == "PASS" for v in verdicts),
-                        "owner_replies": sum(r["kind"] == "reply" for r in recs),
+                        "owner_replies": sum(r["kind"] == "reply" and r["data"].get("command") != "chat_block_request"
+                                             for r in recs),
                         "owner_blocks": sum(r["kind"] == "reply" and r["data"].get("command") == "BLOCK" for r in recs),
                         "median_ms": int(statistics.median(ms)) if ms else None,
                         "events": len(recs),
@@ -227,7 +267,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                         "llm": state.use_llm,
                     })
                 if self.path == "/api/health":
-                    return self._send(200, {"ok": True, "llm": state.use_llm})
+                    return self._send(200, {"ok": True, "llm": state.use_llm, "subq": state.use_subq})
                 if self.path == "/api/demo":
                     return self._send(200, [
                         {"pr_id": p.pr_id, "title": p.title, "issue_text": p.issue_text, "opened_by": p.opened_by,
@@ -265,10 +305,20 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
                 github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
                 blocked = True
-            if action.text:
-                state.notifier.send(inbound.phone, action.text)
+            if action.kind == "teach" and action.text:
+                state.notifier.send(inbound.phone, action.text)  # ack now; the outcome follows
             _teach_or_forget(state, inbound.phone, r, reply.note, action.kind)
             store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
+
+            def answer() -> None:  # Muse can take seconds; Sendblue gets its 200 now, the owner gets the text after
+                if action.kind in ("teach", "forget"):
+                    return  # _teach_or_forget texts that outcome itself; one reply per message
+                try:
+                    state.notifier.send(inbound.phone, imessage.converse(r, reply.raw, action, thread["pr_url"]))
+                except Exception as e:  # noqa: BLE001 - never lose the reply silently
+                    print(f"[merge-gate] reply to owner failed: {type(e).__name__}: {e}", flush=True)
+
+            threading.Thread(target=answer, daemon=True).start()
             return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
 
         def do_POST(self) -> None:
@@ -281,14 +331,13 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/message":
                     r = state.report(body["pr_id"])
                     text = format_message(r, body.get("pr_url", ""))
-                    out = {"to": r.owners[0].__dict__ if r.owners else None, "text": text, "sent": None}
+                    # text follows the report's urgency: "fyi" is a one-line FYI, "page" (or unassessed) the full message
+                    out = {"to": r.owners[0].__dict__ if r.owners else None, "text": text, "urgency": r.urgency or "page", "sent": None}
                     if body.get("send") and r.owners:
-                        phone = imessage.phone_for(r.owners[0].email)
-                        if not phone:
-                            return self._send(400, {**out, "error": f"no OWNER_PHONES entry for {r.owners[0].email}"})
-                        out["sent"] = state.notifier.send(phone, text)
-                        state.threads[imessage.phone_key(phone)] = {
-                            "pr_id": r.pr_id, "pr_url": body.get("pr_url", ""), "github": body.get("github") or {}}
+                        paged = state.page(r, body.get("pr_url", ""), body.get("github") or {}, dedupe=True)
+                        if paged.get("error"):
+                            return self._send(400, {**out, "error": paged["error"]})
+                        out["sent"] = paged["sent"]
                     return self._send(200, out)
                 if urllib.parse.urlparse(self.path).path == "/api/sendblue":
                     return self._sendblue(body)
@@ -325,8 +374,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(host: str = "127.0.0.1", port: int = 8787, use_llm: bool = False) -> None:
-    state = State(use_llm)
+def serve(host: str = "127.0.0.1", port: int = 8787, use_llm: bool = False, use_subq: bool = False) -> None:
+    state = State(use_llm, use_subq)
     httpd = ThreadingHTTPServer((host, port), make_handler(state))
-    print(f"[merge-gate] API on http://{host}:{port}  (Muse Spark {'ON' if use_llm else 'OFF'})")
+    print(f"[merge-gate] API on http://{host}:{port}  (Muse Spark {'ON' if use_llm else 'OFF'}, SubQ {'ON' if use_subq else 'OFF'})")
     httpd.serve_forever()
