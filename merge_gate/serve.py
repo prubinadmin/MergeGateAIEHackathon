@@ -7,6 +7,8 @@
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
   POST /api/reply    {"pr_id": "demo-1", "text": "BLOCK", "github": {"repo": "o/r", "number": 7}}
                                                          -> {"command", "action", "text", "github_blocked"}
+  POST /api/message  {..., "send": true, "github": {...}}  -> also sends the iMessage via Sendblue (or console)
+  POST /api/sendblue?token=SECRET     Sendblue inbound webhook; only the PR owner's verified phone can act
   GET  /api/log                       run log records + whether the hash chain verifies
   GET  /api/run?pr_id=demo-1&llm=1     Server-Sent Events: one event per real stage as it starts/finishes, then the report
   GET  /api/stats                     counters for the header bar, from the run log
@@ -24,7 +26,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import store
+from . import imessage, store
+from .llm import load_dotenv
 from .demo import build_demo_repo, demo_prs
 from .notify import format_message, handle_reply, parse_reply
 from .pr import PullRequest
@@ -40,6 +43,10 @@ class State:
         self.prs: dict[str, PullRequest] = {}
         self.lock = threading.Lock()
         self._demo_ready = False
+        load_dotenv()
+        self.notifier = imessage.notifier_from_env()
+        # phone_key -> the PR that number was last messaged about (so a bare "BLOCK" reply has a target)
+        self.threads: dict[str, dict] = {}
 
     def demo(self) -> list[PullRequest]:
         with self.lock:
@@ -194,6 +201,35 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             except Exception as e:  # noqa: BLE001 - report to the client
                 return self._send(500, {"error": str(e)})
 
+        def _sendblue(self, body: dict) -> None:
+            """Inbound iMessage webhook. Auth first; then only the PR's verified owner can act."""
+            q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
+            if not imessage.webhook_authorized(q.get("token"), list(self.headers.values())):
+                return self._send(401, {"error": "unauthorized"})
+            inbound = imessage.parse_inbound(body)
+            if inbound is None:
+                return self._send(200, {"ignored": "outbound echo or no sender"})
+            thread = state.threads.get(imessage.phone_key(inbound.phone))
+            if not thread:
+                return self._send(200, {"ignored": "no open PR for this number"})
+            r = state.report(thread["pr_id"])
+            action, reply, ok = imessage.handle_inbound(inbound, r, thread["pr_url"])
+            if not ok:
+                store.log_reply(r.pr_id, "unverified-sender", reply.command, reply.raw, "rejected")
+                return self._send(200, {"ignored": "sender is not this PR's owner"})
+            owner = r.owners[0].name
+            blocked = False
+            gh = thread["github"]
+            if action.kind == "block_pr" and gh.get("repo") and gh.get("number"):
+                from . import github
+
+                github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
+                blocked = True
+            if action.text:
+                state.notifier.send(inbound.phone, action.text)
+            store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
+            return self._send(200, {"command": reply.command, "action": action.kind, "github_blocked": blocked})
+
         def do_POST(self) -> None:
             if not self._origin_ok():
                 return self._send(403, {"error": "origin not allowed"})
@@ -203,7 +239,18 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     return self._send(200, state.verify(body).to_dict())
                 if self.path == "/api/message":
                     r = state.report(body["pr_id"])
-                    return self._send(200, {"to": r.owners[0].__dict__ if r.owners else None, "text": format_message(r, body.get("pr_url", ""))})
+                    text = format_message(r, body.get("pr_url", ""))
+                    out = {"to": r.owners[0].__dict__ if r.owners else None, "text": text, "sent": None}
+                    if body.get("send") and r.owners:
+                        phone = imessage.phone_for(r.owners[0].email)
+                        if not phone:
+                            return self._send(400, {**out, "error": f"no OWNER_PHONES entry for {r.owners[0].email}"})
+                        out["sent"] = state.notifier.send(phone, text)
+                        state.threads[imessage.phone_key(phone)] = {
+                            "pr_id": r.pr_id, "pr_url": body.get("pr_url", ""), "github": body.get("github") or {}}
+                    return self._send(200, out)
+                if urllib.parse.urlparse(self.path).path == "/api/sendblue":
+                    return self._sendblue(body)
                 if self.path == "/api/reply":
                     r = state.report(body["pr_id"])
                     reply = parse_reply(body.get("text", ""))
