@@ -166,6 +166,29 @@ def independent_check(pr: PullRequest, timeout_s: int = 60) -> TestGenResult:
     return check_generated(pr, res.source, timeout_s)
 
 
+def _split_invariants(names: list[str], failed_on_base: set[str]) -> tuple[list[str], list[str]]:
+    """(kept, dropped): the invariant tests that passed on base, and the bad ones that already failed there."""
+    invariants = [n for n in names if n.startswith("test_invariant")]
+    return [n for n in invariants if n not in failed_on_base], [n for n in invariants if n in failed_on_base]
+
+
+def _head_evidence(head: SandboxResult) -> list[Evidence]:
+    """Failures on head: an invariant is a regression (block), an issue test may have misread the spec (review)."""
+    if head.errored and not head.failed:
+        return [Evidence(
+            type="failing_test", id="gate::import", severity="block",
+            detail="the PR breaks the public interface: the gate's tests cannot even import or run",
+        )]
+    out: list[Evidence] = []
+    for f in head.failed:
+        test = f.test_id.split("::")[-1]
+        if test.startswith("test_invariant"):
+            out.append(Evidence(type="failing_test", id=f"gate::{test}", detail=f"{test}: {f.message}", file=f.file, line=f.line, severity="block"))
+        elif test.startswith("test_issue"):
+            out.append(Evidence(type="failing_test", id=f"gate::{test}", detail=f"{test}: {f.message}", file=f.file, line=f.line, severity="review"))
+    return out
+
+
 def check_generated(pr: PullRequest, source: str, timeout_s: int = 60) -> TestGenResult:
     """Run spec-only tests on base, drop the ones base already fails, then run the rest on head."""
     res = TestGenResult(source=source)
@@ -175,23 +198,10 @@ def check_generated(pr: PullRequest, source: str, timeout_s: int = 60) -> TestGe
         res.error = "generated tests do not run on base"
         return res
 
-    names = _test_names(res.source)
     failed_on_base = {f.test_id.split("::")[-1] for f in res.base.failed}
-    res.dropped_invariants = [n for n in names if n.startswith("test_invariant") and n in failed_on_base]
-    res.kept_invariants = [n for n in names if n.startswith("test_invariant") and n not in failed_on_base]
+    res.kept_invariants, res.dropped_invariants = _split_invariants(_test_names(res.source), failed_on_base)
     source = _drop_tests(res.source, set(res.dropped_invariants)) if res.dropped_invariants else res.source
 
     res.head = run_tests(pr.repo_path, pr.head_ref, {name: source}, timeout_s)
-    if res.head.errored and not res.head.failed:
-        res.evidence.append(Evidence(
-            type="failing_test", id="gate::import", severity="block",
-            detail="the PR breaks the public interface: the gate's tests cannot even import or run",
-        ))
-        return res
-    for f in res.head.failed:
-        test = f.test_id.split("::")[-1]
-        if test.startswith("test_invariant"):
-            res.evidence.append(Evidence(type="failing_test", id=f"gate::{test}", detail=f"{test}: {f.message}", file=f.file, line=f.line, severity="block"))
-        elif test.startswith("test_issue"):
-            res.evidence.append(Evidence(type="failing_test", id=f"gate::{test}", detail=f"{test}: {f.message}", file=f.file, line=f.line, severity="review"))
+    res.evidence = _head_evidence(res.head)
     return res

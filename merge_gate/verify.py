@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from .pr import PullRequest
 from .rules import check_rules
 from .schema import Evidence, Owner, Verdict, VerdictReport, owner_key, run_hash
@@ -52,6 +54,91 @@ def llm_summary(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], own
     return text[:400] if text else template_summary(pr, verdict, evidence)
 
 
+# --- verify() stages. Each emits exactly its own on_stage events (the UI's live lanes); verify() keeps the order.
+
+
+def _emitter(on_stage):
+    def emit(name: str, status: str, **data) -> None:
+        if on_stage:
+            on_stage(name, status, data)
+
+    return emit
+
+
+def _timed(emit, name: str, fn):
+    emit(name, "start")
+    t0 = time.monotonic()
+    out = fn()
+    return out, int((time.monotonic() - t0) * 1000)
+
+
+def _run_rules(pr: PullRequest, steps: dict, emit) -> list[Evidence]:
+    raw, ms = _timed(emit, "rules", lambda: list(steps.get("rules", check_rules)(pr)))
+    emit("rules", "done", ms=ms, evidence=[e.__dict__ for e in raw])
+    return raw
+
+
+def _run_owners(pr: PullRequest, steps: dict, emit) -> list[Owner]:
+    from .owners import resolve_owners
+
+    owners, ms = _timed(emit, "owners", lambda: steps.get("owners", resolve_owners)(pr))
+    emit("owners", "done", ms=ms, owners=[o.__dict__ for o in owners])
+    return owners
+
+
+def _run_testgen(pr: PullRequest, timeout_s: int, steps: dict, emit) -> tuple[list[Evidence], list[str]]:
+    """Muse's spec-only tests: (evidence, notes for the summary)."""
+    from .testgen import independent_check
+
+    tg, ms = _timed(emit, "testgen", lambda: steps.get("testgen", independent_check)(pr, timeout_s))
+    notes: list[str] = []
+    if tg.error:
+        notes.append(tg.error)
+    elif tg.dropped_invariants:
+        notes.append(f"dropped {len(tg.dropped_invariants)} generated tests that failed on base")
+    emit(
+        "testgen", "done", ms=ms, error=tg.error, source=tg.source,
+        kept=tg.kept_invariants, dropped=tg.dropped_invariants,
+        base={"passed": tg.base.passed, "failed": len(tg.base.failed), "hash": tg.base.output_hash} if tg.base else None,
+        head={"passed": tg.head.passed, "failed": len(tg.head.failed), "hash": tg.head.output_hash} if tg.head else None,
+        evidence=[e.__dict__ for e in tg.evidence],
+    )
+    return tg.evidence, notes
+
+
+def _run_owner_tests(pr: PullRequest, timeout_s: int, emit) -> list[Evidence]:
+    from .owner_tests import check_owner_tests
+
+    # stored owner rules: running them needs no model, so they run with or without Muse
+    ot, ms = _timed(emit, "owner_tests", lambda: check_owner_tests(pr, timeout_s))
+    emit("owner_tests", "done", ms=ms, evidence=[e.__dict__ for e in ot])
+    return ot
+
+
+def _route(pr: PullRequest, owners: list[Owner], evidence: list[Evidence], verdict: Verdict, use_subq: bool,
+           emit) -> tuple[list[Owner], dict]:
+    """(owners, report routing fields): SubQ reorders owners when opted in and keyed, else blame order stands."""
+    from . import subq
+
+    if not (use_subq and subq.has_key()):
+        emit("routing", "skipped", reason="no SUBQ_API_KEY or --no-subq")
+        return owners, {}
+    (owners, routing), ms = _timed(emit, "routing", lambda: subq.route(pr, owners, evidence, verdict))
+    emit("routing", "done", ms=ms, to=owners[0].__dict__ if owners else None,
+         **{"routed_by": "blame", "route_confidence": None, "urgency_p": None, **routing})
+    return owners, routing
+
+
+def _summarize(pr: PullRequest, verdict: Verdict, evidence: list[Evidence], owners: list[Owner], use_llm: bool,
+               emit) -> str:
+    if use_llm:
+        summary, ms = _timed(emit, "summary", lambda: llm_summary(pr, verdict, evidence, owners[0] if owners else None))
+    else:
+        summary, ms = _timed(emit, "summary", lambda: template_summary(pr, verdict, evidence))
+    emit("summary", "done", ms=ms, summary=summary)
+    return summary
+
+
 def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="current", on_stage=None,
            use_subq: bool = False, steps: dict | None = None) -> VerdictReport:
     """use_llm=True adds Muse Spark's spec-only tests and the plain-English summary. Owners' stored rules always run.
@@ -65,53 +152,18 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
     agent team passes its specialists' results here). decide(), the summary and run_hash stay here.
     """
     steps = steps or {}
-    import time
+    emit = _emitter(on_stage)
 
-    def emit(name: str, status: str, **data) -> None:
-        if on_stage:
-            on_stage(name, status, data)
-
-    def timed(name, fn):
-        emit(name, "start")
-        t0 = time.monotonic()
-        out = fn()
-        return out, int((time.monotonic() - t0) * 1000)
-
-    raw, ms = timed("rules", lambda: list(steps.get("rules", check_rules)(pr)))
-    evidence: list[Evidence] = raw
-    emit("rules", "done", ms=ms, evidence=[e.__dict__ for e in raw])
-
-    from .owners import resolve_owners
-
-    owners, ms = timed("owners", lambda: steps.get("owners", resolve_owners)(pr))
-    emit("owners", "done", ms=ms, owners=[o.__dict__ for o in owners])
+    evidence: list[Evidence] = _run_rules(pr, steps, emit)
+    owners = _run_owners(pr, steps, emit)
 
     notes: list[str] = []
     if use_llm:
-        from .testgen import independent_check
-
-        tg, ms = timed("testgen", lambda: steps.get("testgen", independent_check)(pr, timeout_s))
-        evidence = evidence + tg.evidence
-        if tg.error:
-            notes.append(tg.error)
-        elif tg.dropped_invariants:
-            notes.append(f"dropped {len(tg.dropped_invariants)} generated tests that failed on base")
-        emit(
-            "testgen", "done", ms=ms, error=tg.error, source=tg.source,
-            kept=tg.kept_invariants, dropped=tg.dropped_invariants,
-            base={"passed": tg.base.passed, "failed": len(tg.base.failed), "hash": tg.base.output_hash} if tg.base else None,
-            head={"passed": tg.head.passed, "failed": len(tg.head.failed), "hash": tg.head.output_hash} if tg.head else None,
-            evidence=[e.__dict__ for e in tg.evidence],
-        )
+        tg_evidence, notes = _run_testgen(pr, timeout_s, steps, emit)
+        evidence = evidence + tg_evidence
     else:
         emit("testgen", "skipped", reason="no MUSE_API_KEY or --no-llm")
-
-    from .owner_tests import check_owner_tests
-
-    # stored owner rules: running them needs no model, so they run with or without Muse
-    ot, ms = timed("owner_tests", lambda: check_owner_tests(pr, timeout_s))
-    evidence = evidence + ot
-    emit("owner_tests", "done", ms=ms, evidence=[e.__dict__ for e in ot])
+    evidence = evidence + _run_owner_tests(pr, timeout_s, emit)
 
     from .learn import apply_config, load_current
 
@@ -122,21 +174,8 @@ def verify(pr: PullRequest, use_llm: bool = False, timeout_s: int = 60, config="
     emit("decide", "done", ms=0, verdict=verdict, gate_version=gate_version)
 
     blame_owner = owner_key(owners[0]) if owners else ""
-    routing: dict = {}
-    from . import subq
-
-    if use_subq and subq.has_key():
-        (owners, routing), ms = timed("routing", lambda: subq.route(pr, owners, evidence, verdict))
-        emit("routing", "done", ms=ms, to=owners[0].__dict__ if owners else None,
-             **{"routed_by": "blame", "route_confidence": None, "urgency_p": None, **routing})
-    else:
-        emit("routing", "skipped", reason="no SUBQ_API_KEY or --no-subq")
-
-    if use_llm:
-        summary, ms = timed("summary", lambda: llm_summary(pr, verdict, evidence, owners[0] if owners else None))
-    else:
-        summary, ms = timed("summary", lambda: template_summary(pr, verdict, evidence))
-    emit("summary", "done", ms=ms, summary=summary)
+    owners, routing = _route(pr, owners, evidence, verdict, use_subq, emit)
+    summary = _summarize(pr, verdict, evidence, owners, use_llm, emit)
 
     report = VerdictReport(
         pr_id=pr.pr_id,
