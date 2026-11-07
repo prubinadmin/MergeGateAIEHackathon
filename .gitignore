@@ -1,0 +1,17 @@
+# secrets: API keys and phone numbers live only here
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# run output (sandbox runs, cached LLM calls)
+runs/
+.cache/
