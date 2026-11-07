@@ -12,6 +12,9 @@ __pycache__/
 build/
 dist/
 
+# generated benchmark repo (its own git history; rebuild with benchmark/build_target_repo.py)
+benchmark/target_repo/
+
 # run output (sandbox runs, cached LLM calls)
 runs/
 .cache/

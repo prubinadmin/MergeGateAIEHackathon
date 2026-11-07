@@ -12,9 +12,11 @@ from typing import Any, Literal
 
 Verdict = Literal["BLOCK", "REVIEW", "PASS"]
 EvidenceType = Literal["failing_test", "rule"]
+Severity = Literal["block", "review"]
 
 VERDICTS: tuple[str, ...] = ("BLOCK", "REVIEW", "PASS")
 EVIDENCE_TYPES: tuple[str, ...] = ("failing_test", "rule")
+SEVERITIES: tuple[str, ...] = ("block", "review")
 
 
 @dataclass
@@ -24,6 +26,7 @@ class Evidence:
     detail: str  # one human-readable line
     file: str | None = None
     line: int | None = None
+    severity: Severity = "block"  # "review" = worth a human look, not enough to block
 
 
 @dataclass
@@ -77,6 +80,8 @@ def validate(d: dict[str, Any]) -> None:
             raise ValueError(f"evidence type must be one of {EVIDENCE_TYPES}")
         if not e.get("id"):
             raise ValueError("evidence needs an id")
+        if e.get("severity", "block") not in SEVERITIES:
+            raise ValueError(f"evidence severity must be one of {SEVERITIES}")
     if d["verdict"] == "BLOCK" and not d.get("evidence"):
         raise ValueError("a BLOCK verdict must carry at least one piece of evidence")
 
