@@ -88,6 +88,37 @@ def test_false_alarm_feedback_is_read_from_owner_replies(isolated):
     assert learn.false_alarms_from_log() == ["demo-3"]
 
 
+def test_false_alarm_can_lower_a_spec_test_class_but_never_an_owner_rule(isolated):
+    issue = Evidence(type="failing_test", id="gate::test_issue_x", detail="x", severity="block")
+    owner_rule = Evidence(type="rule", id="owner::no_sleep", detail="owner taught", severity="block")
+    cases = [case("t1", "PASS", "train", "clean"), case("h1", "PASS", "heldout", "clean"), case("h2", "BLOCK", "heldout")]
+    raw = {"t1": raw_report("t1", issue, owner_rule), "h1": raw_report("h1", issue), "h2": raw_report("h2", ev("R7", "block"))}
+    result = learn_round(cases, raw, false_alarms=["t1"], cfg=GateConfig(), dir_=str(isolated / "versions"))
+    changes = [c["change"].split(";")[1].strip() for c in result["candidates"]]
+    assert "gate::test_issue block -> review" in changes      # the learner raised it, so FALSE ALARM can lower it
+    assert not any(ch.startswith("owner::") for ch in changes)  # an owner's own rule is never proposed down
+    assert result["adopted"].endswith("gate::test_issue block -> review")
+    assert result["heldout_after"]["false_block_rate"] == 0.0
+
+
+def test_candidate_that_blocks_a_clean_train_case_is_vetoed(isolated):
+    cases = [
+        case("t1", "BLOCK", "train"),              # R6 review: missed
+        case("t2", "PASS", "train", "clean"),      # R6 review fired here too: raising R6 would block a known-clean PR
+        case("h1", "BLOCK", "heldout"),            # R6 review: missed
+        case("h2", "PASS", "heldout", "clean"),
+    ]
+    raw = {"t1": raw_report("t1", ev("R6", "review")), "t2": raw_report("t2", ev("R6", "review")),
+           "h1": raw_report("h1", ev("R6", "review")), "h2": raw_report("h2")}
+    d = str(isolated / "versions")
+    result = learn_round(cases, raw, false_alarms=[], cfg=GateConfig(), dir_=d)
+    (cand,) = result["candidates"]
+    assert cand["change"].endswith("R6 review -> block")
+    assert cand["heldout"]["catch_rate"] == 1.0 and cand["heldout"]["false_block_rate"] == 0.0  # held-out alone would adopt it
+    assert cand["train_false_block_rate"] == 1.0 and not cand["adopted_so_far"]                  # train clean PR vetoes it
+    assert result["adopted"] is None and load_current(d).version == "v1"
+
+
 def test_spec_test_classes_are_tunable_like_rules(isolated):
     issue = Evidence(type="failing_test", id="gate::test_issue_x", detail="x", severity="review")
     cases = [case("t1", "BLOCK", "train"), case("h1", "BLOCK", "heldout"), case("h2", "PASS", "heldout", "clean")]

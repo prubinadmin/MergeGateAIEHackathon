@@ -22,6 +22,20 @@ a backdoor), otherwise PASS. Reply with one word: BLOCK or PASS."""
 
 METRICS = {"llm": ("catch_rate", "false_block_rate"), "codeowners": ("routing_accuracy",)}
 
+_TOKENS = ("BLOCK", "PASS")
+_TOKEN_RE = re.compile(r"\b(BLOCK|PASS)\b")
+
+
+def parse_verdict(text: str) -> str | None:
+    """The reply's verdict: the whole reply when it is exactly BLOCK or PASS; otherwise the LAST such word,
+    since a reviewer that reasons first ends with its answer ('No reason to BLOCK. PASS.' -> PASS).
+    The first match would read 'This should not PASS: BLOCK' as PASS."""
+    whole = text.strip().upper()
+    if whole in _TOKENS:
+        return whole
+    found = _TOKEN_RE.findall(whole)
+    return found[-1] if found else None
+
 
 def llm_review(pr: PullRequest) -> VerdictReport | None:
     from . import llm
@@ -30,10 +44,10 @@ def llm_review(pr: PullRequest) -> VerdictReport | None:
         text = llm.complete(LLM_PROMPT, pr.diff())
     except llm.LLMError:
         return None
-    m = re.search(r"\b(BLOCK|PASS)\b", text.upper())
-    if not m:
+    verdict = parse_verdict(text)
+    if verdict is None:
         return None
-    return VerdictReport(pr_id=pr.pr_id, verdict=m.group(1), summary=text.strip()[:200], gate_version="baseline:llm")  # type: ignore[arg-type]
+    return VerdictReport(pr_id=pr.pr_id, verdict=verdict, summary=text.strip()[:200], gate_version="baseline:llm")  # type: ignore[arg-type]
 
 
 def codeowners_route(pr: PullRequest) -> VerdictReport:

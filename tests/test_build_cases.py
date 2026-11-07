@@ -19,7 +19,10 @@ spec.loader.exec_module(build_cases)
 def committed() -> list[dict]:
     out = []
     for name in sorted(os.listdir(os.path.join(ROOT, "cases"))):
-        with open(os.path.join(ROOT, "cases", name, "case.json"), encoding="utf-8") as f:
+        path = os.path.join(ROOT, "cases", name, "case.json")
+        if not os.path.isfile(path):  # .DS_Store and friends
+            continue
+        with open(path, encoding="utf-8") as f:
             out.append(json.load(f))
     return out
 
@@ -87,6 +90,35 @@ def test_target_repo_build_is_deterministic(tmp_path):
         build_cases.build_repo(str(tmp_path / "a"))
 
 
+def test_git_runs_with_a_scrubbed_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "outer.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "idx"))
+    repo = str(tmp_path / "r")
+    os.makedirs(repo)
+    build_cases._git(repo, "init", "-q", "-b", "main")
+    assert os.path.isdir(os.path.join(repo, ".git")) and not os.path.exists(tmp_path / "outer.git")
+    seen = {}
+    monkeypatch.setattr(build_cases.subprocess, "run", lambda *a, **kw: seen.update(kw["env"]) or subprocess.CompletedProcess(a, 0, "", ""))
+    build_cases._git(repo, "status")
+    assert "GIT_DIR" not in seen and "GIT_WORK_TREE" not in seen and "GIT_INDEX_FILE" not in seen
+    assert seen["GIT_CONFIG_GLOBAL"] == os.devnull and seen["HOME"] != os.environ.get("HOME")
+
+
+def test_write_cases_removes_stale_generated_dirs_only(tmp_path):
+    cases_dir = str(tmp_path / "cases")
+    for stale in ("pr99_clean", "pr01_deleted_test", "notes", "prX_other"):
+        os.makedirs(os.path.join(cases_dir, stale))
+    with open(os.path.join(cases_dir, "README.md"), "w") as f:
+        f.write("keep\n")
+    cases = build_cases.all_cases()
+    build_cases.write_cases(cases, cases_dir)
+    names = set(os.listdir(cases_dir))
+    assert "pr99_clean" not in names and "pr01_deleted_test" not in names  # stale prNN_* dirs gone
+    assert {"notes", "prX_other", "README.md"} <= names                      # anything else untouched
+    assert names - {"notes", "prX_other", "README.md"} == {f"{c['pr_id']}_{c['label']['kind']}" for c in cases}
+
+
 def test_load_cases_reads_the_benchmark():
     cases = load_cases(ROOT)
     assert len(cases) == 30
@@ -105,3 +137,46 @@ def test_baselines(tmp_path, monkeypatch):
     assert baselines.llm_review(pr).verdict == "BLOCK"
     monkeypatch.setattr(llm, "complete", lambda dev, user: "not sure")
     assert baselines.llm_review(pr) is None  # unparseable -> counted as a missing report
+
+
+@pytest.mark.parametrize("reply, want", [
+    ("BLOCK", "BLOCK"),
+    ("  pass\n", "PASS"),
+    ("This should not PASS: BLOCK", "BLOCK"),   # first-match would say PASS
+    ("No reason to BLOCK. PASS.", "PASS"),      # first-match would say BLOCK
+    ("Block. This changes X.", "BLOCK"),
+    ("Reasoning first.\nBLOCK", "BLOCK"),
+    ("PASSING is not a verdict", None),
+    ("not sure", None),
+])
+def test_baseline_verdict_parsing(reply, want):
+    from merge_gate.baselines import parse_verdict
+
+    assert parse_verdict(reply) == want
+
+
+def test_bench_llm_baseline_refuses_without_llm_and_fails_on_missing_reports(tmp_path, monkeypatch, capsys):
+    from merge_gate import cli, llm
+
+    root = str(tmp_path / "benchmark")
+    build_cases.write_cases(build_cases.build_repo(os.path.join(root, "target_repo")), os.path.join(root, "cases"))
+    argv = ["bench", "--root", root, "--split", "heldout", "--baseline", "llm"]
+
+    assert cli.main([*argv, "--no-llm"]) == 1
+    assert "needs Muse Spark" in capsys.readouterr().err
+    assert cli.main([*argv, "--stub"]) == 1
+
+    monkeypatch.setattr(llm, "has_key", lambda: True)
+
+    def down(dev, user):
+        raise llm.LLMError("503")
+
+    monkeypatch.setattr(llm, "complete", down)  # every call fails -> no reports -> loud exit 1
+    assert cli.main(argv) == 1
+    out = capsys.readouterr()
+    assert json.loads(out.out)["missing_reports"] == 15
+    assert "15 of 15 cases got no llm report" in out.err and "pr" in out.err
+
+    monkeypatch.setattr(llm, "complete", lambda dev, user: "PASS")
+    assert cli.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["missing_reports"] == 0
