@@ -108,3 +108,13 @@ def test_materialize_cleans_up_on_failure(tmp_path):
     with pytest.raises(GitHubError, match="git clone failed"):
         materialize(r, str(tmp_path), clone_url=lambda o, n: str(tmp_path / "does-not-exist.git"))
     assert list(tmp_path.iterdir()) == []
+
+
+def test_materialize_times_out_and_cleans_up(tmp_path):
+    bare, _ = _bare_with_pull_ref(tmp_path)
+    r = ResolvedPR("acme", "shop", 1, "", "", "", "main", "x", "")
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(GitHubError, match="longer than 0s"):
+        materialize(r, str(work), clone_url=lambda o, n: bare, timeout_s=0)
+    assert list(work.iterdir()) == []
