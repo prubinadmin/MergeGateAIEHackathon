@@ -7,6 +7,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Fetch.ai agent for ASI:One (agents/merge_gate_agent.py)
+agent = ["uagents==0.26.1", "uagents-core==0.4.12"]
 
 [project.scripts]
 merge-gate = "merge_gate.cli:main"

@@ -60,6 +60,13 @@ To enforce on a repo: copy `templates/merge-gate.yml` to `.github/workflows/`, a
 secret, and make `merge-gate` a required status check. BLOCK -> failure, REVIEW -> pending,
 PASS -> success. Only a code owner's GitHub approval (`OWNER_GITHUB` variable) overrides a finding.
 
+### Fetch.ai agent: run the gate inside an ASI:One chat
+```bash
+pip install -e ".[agent]"
+export MERGE_GATE_AGENT_SEED="<long random phrase>"
+python -m agents.merge_gate_agent    # then follow agents/README.md to connect the mailbox and chat in ASI:One
+```
+
 ### 3. War Room UI (live, real gate) and the concept simulator
 ```bash
 python -m merge_gate serve           # terminal 1: the real gate's API on 127.0.0.1:8787
