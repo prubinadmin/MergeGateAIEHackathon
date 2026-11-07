@@ -115,64 +115,63 @@ def specialist(step: str, seed: str, orchestrator_address: str) -> Agent:
     return agent
 
 
-async def fan_out(ctx, addresses: dict[str, str], pr: PullRequest, use_llm: bool, timeout_s: int = 60):
-    """Ask the specialists for every step (Rules and OwnerRouter in parallel with TestWriter -> Sandbox).
+class _Team:
+    """One fan-out's view of the specialists: sends StepRequests, keeps one trace line per step."""
 
-    Returns (steps for merge_gate.verify, one trace line per specialist).
-    """
-    spec = PRSpec(pr_id=pr.pr_id, repo_path=pr.repo_path, base_ref=pr.base_ref, head_ref=pr.head_ref,
-                  title=pr.title, issue_text=pr.issue_text, opened_by=pr.opened_by)
-    trace: dict[str, str] = {}
+    def __init__(self, ctx, addresses: dict[str, str], pr: PullRequest, timeout_s: int):
+        self.ctx, self.addresses, self.pr, self.timeout_s = ctx, addresses, pr, timeout_s
+        self.spec = PRSpec(pr_id=pr.pr_id, repo_path=pr.repo_path, base_ref=pr.base_ref, head_ref=pr.head_ref,
+                           title=pr.title, issue_text=pr.issue_text, opened_by=pr.opened_by)
+        self.trace: dict[str, str] = {}
 
-    async def call(step: str, source: str = "") -> dict:
-        err, attempts = "", 0
-        while attempts < 2:
-            attempts += 1
-            t0, rid = time.monotonic(), uuid4().hex
-            try:
-                resp, status = await ctx.send_and_receive(
-                    addresses[step], StepRequest(step=step, pr=spec, source=source, timeout_s=timeout_s, req_id=rid),
-                    StepResult, timeout=step_timeout(step, timeout_s))
-            except Exception as e:  # noqa: BLE001 - transport failure: run the step in-process
-                err = f"{type(e).__name__}: {e}"
-                break
-            if resp is None:  # timed out or undelivered: the specialist may still be busy, so never queue a retry
-                err = getattr(status, "detail", "") or "no reply"
-                break
-            if resp.req_id != rid:
-                err = "stale reply to an earlier timed-out request"
+    async def _ask(self, step: str, source: str) -> tuple[StepResult | None, str]:
+        """One StepRequest -> (the reply, "") or (None, why there is no usable reply)."""
+        rid = uuid4().hex
+        try:
+            resp, status = await self.ctx.send_and_receive(
+                self.addresses[step],
+                StepRequest(step=step, pr=self.spec, source=source, timeout_s=self.timeout_s, req_id=rid),
+                StepResult, timeout=step_timeout(step, self.timeout_s))
+        except Exception as e:  # noqa: BLE001 - transport failure: run the step in-process
+            return None, f"{type(e).__name__}: {e}"
+        if resp is None:  # timed out or undelivered
+            return None, getattr(status, "detail", "") or "no reply"
+        if resp.req_id != rid:
+            return None, "stale reply to an earlier timed-out request"
+        return resp, ""
+
+    async def call(self, step: str, source: str = "") -> dict:
+        """One step's StepResult fields. An explicit error result is retried once; anything else (timeout,
+        stale or undelivered reply, transport failure) is not, because the specialist may still be busy and a
+        retry would queue behind it. With no usable reply the step runs in-process."""
+        err = ""
+        for attempt in (1, 2):
+            t0 = time.monotonic()
+            resp, err = await self._ask(step, source)
+            if resp is None:
                 break
             if resp.ok:
                 ms = int((time.monotonic() - t0) * 1000)
-                trace[step] = f"{NAMES[step]} agent: done in {ms} ms" + (" (after a retry)" if attempts == 2 else "")
+                self.trace[step] = f"{NAMES[step]} agent: done in {ms} ms" + (" (after a retry)" if attempt == 2 else "")
                 return resp.model_dump()
             err = resp.error or "error"  # an explicit error result: retry once
-        out = await asyncio.to_thread(run_step, step, pr, source, timeout_s)
-        failed = "failed twice" if attempts == 2 else "failed"
-        trace[step] = f"{NAMES[step]} agent {failed} ({err[:120]}); ran that step in-process instead"
+        out = await asyncio.to_thread(run_step, step, self.pr, source, self.timeout_s)
+        failed = "failed twice" if attempt == 2 else "failed"
+        self.trace[step] = f"{NAMES[step]} agent {failed} ({err[:120]}); ran that step in-process instead"
         return out
 
-    async def tests_then_sandbox() -> dict | None:
+    async def tests_then_sandbox(self, use_llm: bool) -> dict | None:
         if not use_llm:
             return None
-        written = await call("tests")
+        written = await self.call("tests")
         if not written.get("source"):
-            trace["sandbox"] = "Sandbox agent: skipped (no generated tests)"
+            self.trace["sandbox"] = "Sandbox agent: skipped (no generated tests)"
             return {"note": written.get("note", "")}
-        return {**await call("sandbox", written["source"]), "source": written["source"]}
+        return {**await self.call("sandbox", written["source"]), "source": written["source"]}
 
-    # return_exceptions: one step failing (even in-process) must not abandon its siblings mid-run.
-    rules, owners, tg = await asyncio.gather(call("rules"), call("owners"), tests_then_sandbox(), return_exceptions=True)
-    if isinstance(tg, BaseException):  # spec-only tests are advisory: a failure becomes a note, as in verify()
-        why = f"{type(tg).__name__}: {str(tg)[:200]}"
-        trace["tests"] = f"TestWriter/Sandbox step failed ({why[:120]}); verdict uses rules and owners only"
-        tg = {"note": f"generated tests unavailable: {why}"}
-    elif tg is None:
-        trace["tests"] = "TestWriter + Sandbox agents: skipped (Muse Spark off: no MUSE_API_KEY, or MERGE_GATE_AGENT_LLM=0)"
-    failed = [f"{NAMES[s]} step failed: {type(r).__name__}: {str(r)[:200]}"
-              for s, r in (("rules", rules), ("owners", owners)) if isinstance(r, BaseException)]
-    if failed:  # without rules or owners there is no honest verdict: fail the run loudly, never a silent PASS
-        raise RuntimeError("; ".join(failed))
+
+def _testgen_step(tg: dict):
+    """merge_gate.verify's testgen step, replaying what TestWriter and Sandbox returned."""
 
     def testgen(_pr, _timeout):
         from merge_gate.testgen import TestGenResult
@@ -181,10 +180,32 @@ async def fan_out(ctx, addresses: dict[str, str], pr: PullRequest, use_llm: bool
                              dropped_invariants=tg.get("dropped", []), error=tg.get("note", ""),
                              evidence=[Evidence(**e) for e in tg.get("evidence", [])])
 
+    return testgen
+
+
+async def fan_out(ctx, addresses: dict[str, str], pr: PullRequest, use_llm: bool, timeout_s: int = 60):
+    """Ask the specialists for every step (Rules and OwnerRouter in parallel with TestWriter -> Sandbox).
+
+    Returns (steps for merge_gate.verify, one trace line per specialist).
+    """
+    team = _Team(ctx, addresses, pr, timeout_s)
+    # return_exceptions: one step failing (even in-process) must not abandon its siblings mid-run.
+    rules, owners, tg = await asyncio.gather(team.call("rules"), team.call("owners"),
+                                             team.tests_then_sandbox(use_llm), return_exceptions=True)
+    if isinstance(tg, BaseException):  # spec-only tests are advisory: a failure becomes a note, as in verify()
+        why = f"{type(tg).__name__}: {str(tg)[:200]}"
+        team.trace["tests"] = f"TestWriter/Sandbox step failed ({why[:120]}); verdict uses rules and owners only"
+        tg = {"note": f"generated tests unavailable: {why}"}
+    elif tg is None:
+        team.trace["tests"] = "TestWriter + Sandbox agents: skipped (Muse Spark off: no MUSE_API_KEY, or MERGE_GATE_AGENT_LLM=0)"
+    failed = [f"{NAMES[s]} step failed: {type(r).__name__}: {str(r)[:200]}"
+              for s, r in (("rules", rules), ("owners", owners)) if isinstance(r, BaseException)]
+    if failed:  # without rules or owners there is no honest verdict: fail the run loudly, never a silent PASS
+        raise RuntimeError("; ".join(failed))
     steps = {
         "rules": lambda _pr: [Evidence(**e) for e in rules["evidence"]],
         "owners": lambda _pr: [Owner(**o) for o in owners["owners"]],
     }
     if tg is not None:
-        steps["testgen"] = testgen
-    return steps, [trace[s] for s in STEPS if s in trace]
+        steps["testgen"] = _testgen_step(tg)
+    return steps, [team.trace[s] for s in STEPS if s in team.trace]

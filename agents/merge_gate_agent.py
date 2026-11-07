@@ -23,12 +23,13 @@ import logging
 import os
 import re
 import sys
+from collections import deque
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
 from merge_gate import store
 from merge_gate.notify import handle_reply, parse_reply
-from merge_gate.schema import VerdictReport
+from merge_gate.schema import Evidence, VerdictReport
 
 log = logging.getLogger("merge_gate.agent")
 Kind = Literal["list", "verify", "why", "block", "approve", "github", "help"]
@@ -38,6 +39,9 @@ HELP = (
     "Try: \"list PRs\", \"verify demo-1\", \"why demo-1\", \"block demo-1 <reason>\".\n"
     "A chat can never approve a merge; \"block\" records a request for the code owner."
 )
+# Whole-run budget in seconds (fan-out + decide). Past it the user gets a TimeoutError failure reply, never
+# silence; a specialist's late reply is dropped anyway (agents/team.py matches replies by req_id).
+GATE_BUDGET_S = 420
 _PR = re.compile(r"\bdemo-\d+\b", re.I)
 _GITHUB = re.compile(r"\b[\w.-]+/[\w.-]+\b.*#\d+|#\d+.*\b[\w.-]+/[\w.-]+\b")
 # Checked in this order: a question (WHY/VERIFY) beats BLOCK, so "why was demo-1 blocked" and
@@ -59,44 +63,57 @@ class Command:
     note: str = ""
 
 
-def parse_command(text: str) -> Command:
-    """Chat text (or an Interactive Card selection, which ASI:One sends as JSON text) -> Command."""
-    text = (text or "").strip()
+def _card_selection(text: str) -> Command | None:
+    """An Interactive Card selection (ASI:One sends it as JSON text) -> Command; None for anything else."""
     try:
         sel = json.loads(text)
     except ValueError:
-        sel = None
-    if isinstance(sel, dict) and sel.get("action"):
-        kind = str(sel["action"]).lower()
-        if kind in ("list", "verify", "why", "block"):
-            return Command(kind, str(sel.get("pr_id", "")).lower(), str(sel.get("note", "")))  # type: ignore[arg-type]
-    m = _PR.search(text)
-    pr_id = m.group(0).lower() if m else ""
+        return None
+    kind = str(sel.get("action") or "").lower() if isinstance(sel, dict) else ""
+    if kind not in ("list", "verify", "why", "block"):
+        return None
+    return Command(kind, str(sel.get("pr_id", "")).lower(), str(sel.get("note", "")))  # type: ignore[arg-type]
+
+
+def _text_kind(text: str, pr_id: str) -> Kind:
+    """The verb in free text, by _KEYWORDS order; no verb means "verify <pr>" when a PR is named, else help."""
     low = text.lower().replace("’", "'")
     words = set(re.findall(r"[a-z]+", low))
     if _NEGATED_BLOCK.search(low):  # "don't block demo-1" must never record a block
         words -= {"block", "stop"}
+    kind = next((k for k, keys in _KEYWORDS if words & set(keys)), None)
+    if kind is None or (kind == "list" and pr_id):  # "show me demo-2" acts on demo-2
+        return "verify" if pr_id else "help"
+    return kind
+
+
+def _text_command(text: str) -> Command:
+    m = _PR.search(text)
+    pr_id = m.group(0).lower() if m else ""
     if not pr_id and _GITHUB.search(text):
         return Command("github")
-    kind = next((k for k, keys in _KEYWORDS if words & set(keys)), None)
-    if kind == "block":
-        note = text[m.end():].strip(" :-.") if m else ""
-        return Command("block", pr_id, note)
-    if kind in ("why", "verify", "approve"):
-        return Command(kind, pr_id)
-    if kind == "list" and not pr_id:  # "show me demo-2" acts on demo-2
-        return Command("list")
-    return Command("verify", pr_id) if pr_id else Command("help")
+    kind = _text_kind(text, pr_id)
+    note = text[m.end():].strip(" :-.") if kind == "block" and m else ""
+    return Command(kind, pr_id, note)
+
+
+def parse_command(text: str) -> Command:
+    """Chat text (or an Interactive Card selection, which ASI:One sends as JSON text) -> Command."""
+    text = (text or "").strip()
+    card = _card_selection(text)
+    return card if card is not None else _text_command(text)
+
+
+def _evidence_line(e: Evidence) -> str:
+    where = f" ({e.file}:{e.line})" if e.file and e.line else (f" ({e.file})" if e.file else "")
+    kind = "failing test" if e.type == "failing_test" else "rule"
+    return f"- [{e.severity}] {kind} {e.id}: {e.detail}{where}"
 
 
 def format_verdict(r: VerdictReport, trace: list[str] | tuple = ()) -> str:
     lines = [f"{r.verdict}: {r.pr_id}", r.summary]
     if r.evidence:
-        lines.append("Evidence:")
-        for e in r.evidence:
-            where = f" ({e.file}:{e.line})" if e.file and e.line else (f" ({e.file})" if e.file else "")
-            kind = "failing test" if e.type == "failing_test" else "rule"
-            lines.append(f"- [{e.severity}] {kind} {e.id}: {e.detail}{where}")
+        lines += ["Evidence:"] + [_evidence_line(e) for e in r.evidence]
     if r.owners:
         o = r.owners[0]
         lines.append(f"Routed to {o.name} <{o.email}>, who wrote {o.lines} of the changed lines.")
@@ -150,9 +167,60 @@ def short_addr(address: str) -> str:
     return f"{address[:12]}...{address[-4:]}" if len(address) > 20 else (address or "an unknown sender")
 
 
+def seen_before(seen: deque, msg_id) -> bool:
+    """True when msg_id was already handled (a redelivered message); otherwise records it and returns False."""
+    if msg_id in seen:
+        return True
+    seen.append(msg_id)
+    return False
+
+
 async def _reply_failure(send: Send, e: Exception) -> None:
     log.exception("gate failed")
     await send(f"The gate failed: {type(e).__name__}: {str(e)[:200]}. Try again or 'list PRs'.", None)
+
+
+_STATIC_REPLIES: dict[str, str] = {
+    "help": HELP,
+    "github": ("This agent runs the gate on the demo PRs (demo-1, demo-2, demo-3). To gate a real GitHub repo, "
+               "install the Action in templates/merge-gate.yml; it posts the same verdict as a required check."),
+    "approve": "A chat can never approve a merge. Approve on GitHub with your own login.",
+}
+
+
+async def _record_block_request(cmd: Command, sender: str) -> str:
+    """A chat block is a request, not an owner action: never touches the verdict, never runs the gate."""
+    raw = f"BLOCK {cmd.note}".strip()
+    await asyncio.to_thread(store.log_reply, cmd.pr_id, sender or "asi-one-chat", "chat_block_request", raw,
+                            "block_request_recorded")
+    return (f"Recorded a block request from {short_addr(sender)}. Only the code owner's verified "
+            "phone or GitHub approval changes the gate.")
+
+
+def _why_reply(state, pr_id: str) -> str:
+    report = state.reports.get(pr_id)
+    if report is None:
+        return f"No verdict yet for {pr_id} — say 'verify {pr_id}' first."
+    return handle_reply(report, parse_reply("WHY")).text
+
+
+async def _quick_reply(cmd: Command, state, sender: str) -> str | None:
+    """The reply to a command that never runs the gate; None when cmd is a gate run on a known PR."""
+    if cmd.kind in _STATIC_REPLIES:
+        return _STATIC_REPLIES[cmd.kind]
+    prs = await asyncio.to_thread(state.demo)
+    if cmd.kind == "list":
+        lines = [f"- {p.pr_id}: {p.title} (opened by {p.opened_by})" for p in prs]
+        return "Demo PRs:\n" + "\n".join(lines) + '\nSay "verify demo-1".'
+    if not cmd.pr_id:
+        return f'Which PR? e.g. "{cmd.kind} demo-1". Say "list PRs" to see them.'
+    if cmd.pr_id not in {p.pr_id for p in prs}:
+        return f'Unknown PR "{cmd.pr_id}". Say "list PRs" to see the demo PRs.'
+    if cmd.kind == "block":
+        return await _record_block_request(cmd, sender)
+    if cmd.kind == "why":
+        return _why_reply(state, cmd.pr_id)
+    return None
 
 
 async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run | None = None,
@@ -170,40 +238,20 @@ async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run |
 
     run = run or in_process
     try:
-        if cmd.kind == "help":
-            return await send(HELP, None)
-        if cmd.kind == "github":
-            return await send(
-                "This agent runs the gate on the demo PRs (demo-1, demo-2, demo-3). To gate a real GitHub repo, "
-                "install the Action in templates/merge-gate.yml; it posts the same verdict as a required check.", None)
-        if cmd.kind == "approve":
-            return await send("A chat can never approve a merge. Approve on GitHub with your own login.", None)
-        prs = await asyncio.to_thread(state.demo)
-        if cmd.kind == "list":
-            lines = [f"- {p.pr_id}: {p.title} (opened by {p.opened_by})" for p in prs]
-            return await send("Demo PRs:\n" + "\n".join(lines) + '\nSay "verify demo-1".', None)
-        if not cmd.pr_id:
-            return await send(f'Which PR? e.g. "{cmd.kind} demo-1". Say "list PRs" to see them.', None)
-        if cmd.pr_id not in {p.pr_id for p in prs}:
-            return await send(f'Unknown PR "{cmd.pr_id}". Say "list PRs" to see the demo PRs.', None)
-        if cmd.kind == "block":  # a request, not an owner action: never touches the verdict, never runs the gate
-            raw = f"BLOCK {cmd.note}".strip()
-            await asyncio.to_thread(store.log_reply, cmd.pr_id, sender or "asi-one-chat", "chat_block_request", raw,
-                                    "block_request_recorded")
-            return await send(f"Recorded a block request from {short_addr(sender)}. Only the code owner's verified "
-                              "phone or GitHub approval changes the gate.", None)
-        if cmd.kind == "why":
-            report = state.reports.get(cmd.pr_id)
-            if report is None:
-                return await send(f"No verdict yet for {cmd.pr_id} — say 'verify {cmd.pr_id}' first.", None)
-            return await send(handle_reply(report, parse_reply("WHY")).text, None)
+        # every command joins the hash-chained run log (merge_gate.store), so a chat trajectory is auditable
+        await asyncio.to_thread(store.append, "chat_command",
+                                {"sender": sender, "text": text[:500], "kind": cmd.kind, "pr_id": cmd.pr_id})
+        reply = await _quick_reply(cmd, state, sender)
+        if reply is not None:
+            return await send(reply, None)
         await send(f"Running the gate on {cmd.pr_id}: rules, code owners, sandbox...", None)
     except Exception as e:  # noqa: BLE001 - the user gets the failure, not silence
         return await _reply_failure(send, e)
 
     async def job() -> None:
         try:
-            report, trace = await run(cmd.pr_id)
+            report, trace = await asyncio.wait_for(run(cmd.pr_id), GATE_BUDGET_S)
+            await asyncio.to_thread(store.append, "agent_trace", {"pr_id": cmd.pr_id, "trace": list(trace)})
             await send(format_verdict(report, trace), verdict_card(report))
         except Exception as e:  # noqa: BLE001
             await _reply_failure(send, e)
@@ -255,10 +303,13 @@ def build_agents(seed: str, port: int = 8001, use_llm: bool = False) -> list:
     addresses = {step: a.address for step, a in zip(STEPS, team)}
     proto = Protocol(spec=chat_protocol_spec)
     in_background = per_sender_spawner()
+    seen: deque = deque(maxlen=512)  # msg_ids already handled: a redelivery is acknowledged again, acted on once
 
     @proto.on_message(ChatMessage)
     async def on_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
         await ctx.send(sender, ChatAcknowledgement(timestamp=datetime.now(timezone.utc), acknowledged_msg_id=msg.msg_id))
+        if seen_before(seen, msg.msg_id):
+            return
         text = " ".join(c.text for c in msg.content if isinstance(c, TextContent))
 
         async def send(reply: str, card: dict[str, str] | None) -> None:
@@ -298,10 +349,11 @@ def main() -> None:
     use_llm = os.environ.get("MERGE_GATE_AGENT_LLM", "1" if os.environ.get("MUSE_API_KEY") else "0") == "1"
     port = int(os.environ.get("MERGE_GATE_AGENT_PORT", "8001"))
     agents = build_agents(seed, port, use_llm)
+    logging.basicConfig(level=logging.INFO)  # a no-op when uagents already configured the root logger on import
     for a in agents[1:]:
-        print(f"[merge-gate] specialist {a.name}: {a.address}")
-    print(f"[merge-gate] orchestrator (ASI:One-facing): {agents[0].address}\n[merge-gate] Agent inspector: "
-          f"https://agentverse.ai/inspect/?uri=http%3A//127.0.0.1%3A{port}&address={agents[0].address}", flush=True)
+        log.info("specialist %s: %s", a.name, a.address)
+    log.info("orchestrator (ASI:One-facing): %s", agents[0].address)
+    log.info("Agent inspector: https://agentverse.ai/inspect/?uri=http%%3A//127.0.0.1%%3A%s&address=%s", port, agents[0].address)
     # The orchestrator gets its own server on `port` so the Agentverse inspector can find it (a multi-agent
     # Bureau answers /agent_info only with an x-uagents-address header, which the inspector doesn't send).
     # The four specialists share a Bureau on port+1; all five run in one process and event loop.
