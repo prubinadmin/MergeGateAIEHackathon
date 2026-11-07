@@ -7,7 +7,7 @@ import './index.css';
 
 type View = 'simulator' | 'live';
 
-const fromHash = (): View => (location.hash === '#live' ? 'live' : 'simulator');
+const fromHash = (): View => (location.hash === '#simulator' ? 'simulator' : 'live');
 
 function Root() {
   const [view, setView] = useState<View>(fromHash);
@@ -18,7 +18,7 @@ function Root() {
   }, []);
   const go = (v: View) => {
     setView(v);
-    history.replaceState(null, '', v === 'live' ? '#live' : location.pathname + location.search);
+    history.replaceState(null, '', v === 'simulator' ? '#simulator' : location.pathname + location.search);
   };
   const tab = (v: View, label: string, icon: ReactNode) => (
     <button
