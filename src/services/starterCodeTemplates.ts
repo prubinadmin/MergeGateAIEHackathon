@@ -293,12 +293,17 @@ jobs:
 
       - name: Generate Diff & Run Merge Gate
         id: gate
+        # untrusted PR fields go through env, never inline \${{ }} in run: (prevents shell injection)
+        env:
+          PR_BODY: \${{ github.event.pull_request.body }}
+          BASE_REF: \${{ github.base_ref }}
+          PR_NUMBER: \${{ github.event.pull_request.number }}
         run: |
-          git diff origin/\${{ github.base_ref }}...HEAD > pr.diff
+          git diff "origin/\$BASE_REF...HEAD" > pr.diff
           python scripts/merge_gate.py \\
-            --pr "PR-\${{ github.event.pull_request.number }}" \\
+            --pr "PR-\$PR_NUMBER" \\
             --diff pr.diff \\
-            --issue "\${{ github.event.pull_request.body }}" > gate_result.json
+            --issue "\$PR_BODY" > gate_result.json
           cat gate_result.json
           
           VERDICT=$(jq -r '.verdict' gate_result.json)
