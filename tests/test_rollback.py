@@ -23,11 +23,27 @@ def out(repo, *args):
     return subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+
+def _no_gh_cli(monkeypatch):
+    """Simulate a machine without the gh CLI: github._token()'s `gh auth token` fallback must find nothing."""
+    import subprocess as _sp
+
+    real_run = _sp.run
+
+    def run(args, *a, **kw):
+        if args and args[0] == "gh":
+            raise FileNotFoundError("gh: command not found")
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(_sp, "run", run)
+
+
 def no_token(monkeypatch, tmp_path):
     """Never pick up a real token from the environment or a .env.local in the cwd."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    _no_gh_cli(monkeypatch)
 
 
 @pytest.fixture

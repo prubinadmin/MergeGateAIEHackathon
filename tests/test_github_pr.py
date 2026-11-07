@@ -100,8 +100,26 @@ def test_resolve_direct_pr_and_errors(monkeypatch):
         resolve("psf/requests#1")
 
 
+
+def _no_gh_cli(monkeypatch):
+    """Simulate a machine without the gh CLI: github._token()'s `gh auth token` fallback must find nothing."""
+    import subprocess as _sp
+
+    real_run = _sp.run
+
+    def run(args, *a, **kw):
+        if args and args[0] == "gh":
+            raise FileNotFoundError("gh: command not found")
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(_sp, "run", run)
+
+
 def test_resolve_without_a_token_calls_github_anonymously(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)  # no .env here, so load_dotenv() finds no token
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    _no_gh_cli(monkeypatch)  # and no `gh auth token` fallback either
     calls = _fake_github(monkeypatch, lambda path: _pr_json(), token="")
     assert resolve("psf/requests#42").number == 42
     assert calls == [("/repos/psf/requests/pulls/42", None)]
