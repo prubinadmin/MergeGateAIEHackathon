@@ -8,8 +8,8 @@ import { ShieldCheck, Play, Sparkles } from 'lucide-react';
 import { Verdict } from '../types/mergeGate';
 
 interface HeaderProps {
-  activeTab: 'pipeline' | 'diff' | 'phone' | 'learning' | 'starter-code';
-  setActiveTab: (tab: 'pipeline' | 'diff' | 'phone' | 'learning' | 'starter-code') => void;
+  activeTab: 'pipeline' | 'diff' | 'phone' | 'learning' | 'test-suite' | 'starter-code';
+  setActiveTab: (tab: 'pipeline' | 'diff' | 'phone' | 'learning' | 'test-suite' | 'starter-code') => void;
   onRunEval: () => void;
   isRunning: boolean;
   currentVerdict?: Verdict;
@@ -48,6 +48,19 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
         >
           Gate Pipeline
+        </button>
+        <button
+          onClick={() => setActiveTab('test-suite')}
+          className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            activeTab === 'test-suite'
+              ? 'bg-slate-800 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+          }`}
+        >
+          Test Suite & Tickets
+          <span className="px-1.5 py-0.2 bg-indigo-900/80 text-indigo-300 text-[10px] rounded font-mono font-bold">
+            6
+          </span>
         </button>
         <button
           onClick={() => setActiveTab('phone')}

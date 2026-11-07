@@ -29,7 +29,15 @@ python -m merge_gate verify --pr demo-1 --stub > report.json
 python -m merge_gate notify report.json --reply BLOCK
 ```
 
-### 2. Real gate on GitHub, API, log, learning
+### 2. Test Suite & Issue Ticket Analyzer (Unsafe AI Code Detection)
+Analyze all sample test cases or a specific file to detect broken, slow, over-complex, or non-conforming AI code:
+```bash
+python scripts/analyze_test_cases.py
+# Or analyze a single test case:
+python scripts/analyze_test_cases.py test_cases/02_performance_latency_slowdown.py
+```
+
+### 3. Real gate on GitHub, API, log, learning
 
 ```bash
 python -m merge_gate serve            # HTTP API on 127.0.0.1:8787 for the web UI and the iMessage webhook
