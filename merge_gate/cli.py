@@ -94,6 +94,19 @@ def main(argv: list[str] | None = None) -> int:
     n.add_argument("--reply", default=None, help="simulate the owner's text reply")
     n.add_argument("--pr-url", default="")
 
+    ci = sub.add_parser("ci", help="run inside GitHub Actions: verify the PR, post status + comment, exit 1 on BLOCK")
+    _llm_flags(ci)
+    ci.add_argument("--out", default="gate_result.json")
+    ci.add_argument("--no-publish", action="store_true", help="do not call the GitHub API")
+
+    s = sub.add_parser("serve", help="HTTP API for the web UI and the iMessage webhook")
+    _llm_flags(s)
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8787)
+
+    lg = sub.add_parser("log", help="show the run log and check its hash chain")
+    lg.add_argument("--tail", type=int, default=10)
+
     b = sub.add_parser("bench", help="run the gate on benchmark cases and print metrics")
     b.add_argument("--root", default="benchmark")
     b.add_argument("--split", choices=["train", "heldout"], default=None)
@@ -138,6 +151,28 @@ def main(argv: list[str] | None = None) -> int:
             if action.text:
                 notifier.send("<owner phone>", action.text)
         return 0
+
+    if args.cmd == "ci":
+        from .ci import main as ci_main
+
+        return ci_main(_use_llm(args), args.out, publish=not args.no_publish)
+
+    if args.cmd == "serve":
+        from .serve import serve
+
+        serve(args.host, args.port, _use_llm(args))
+        return 0
+
+    if args.cmd == "log":
+        from . import store
+
+        ok, bad = store.verify_chain()
+        for rec in store.read()[-args.tail:]:
+            d = rec["data"]
+            what = f"{d.get('pr_id')} {d.get('verdict') or d.get('command')}" + (f" -> {d['action']}" if "action" in d else "")
+            print(f"{rec['at']} {rec['kind']:<8} {what}")
+        print(f"hash chain: {'OK' if ok else f'BROKEN at record {bad}'}")
+        return 0 if ok else 1
 
     if args.cmd == "demo":
         import tempfile

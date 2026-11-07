@@ -1,37 +1,59 @@
-name: "Merge Gate Safety Reviewer"
+# Copy to .github/workflows/merge-gate.yml in the repo you want to protect,
+# then make the "merge-gate" status a required check in branch protection.
+#
+# Secrets / variables:
+#   secrets.MUSE_API_KEY   optional: without it the gate runs rules + ownership only
+#   vars.OWNER_GITHUB      optional: {"owner@email": "github-login"}, lets a code owner override by approving on GitHub
+#
+# The PR's title and body are read from the event file by the gate, never interpolated into shell
+# (interpolating ${{ github.event.pull_request.body }} into `run:` lets anyone inject shell commands).
+
+name: "Merge Gate"
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
 
 jobs:
   merge-gate:
-    name: "Merge Gate Review"
+    name: "Merge Gate"
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Check out the repository under review
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Full history needed for git blame -L and recency weighting
+          fetch-depth: 0  # full history: git blame on the base side, and origin/<base>
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Check out Merge Gate
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
+          repository: prubinadmin/MergeGateAIEHackathon
+          path: .merge-gate
 
-      - name: Generate Diff & Run Merge Gate
-        id: gate
-        run: |
-          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
-          python scripts/merge_gate.py \
-            --pr "PR-${{ github.event.pull_request.number }}" \
-            --diff pr.diff \
-            --issue "${{ github.event.pull_request.body }}" > gate_result.json
-          cat gate_result.json
-          
-          VERDICT=$(jq -r '.verdict' gate_result.json)
-          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
-          if [ "$VERDICT" = "BLOCK" ]; then
-            echo "Merge Gate returned BLOCK. Notifying owner via iMessage."
-            exit 1
-          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install pytest ./.merge-gate
+
+      - name: Run the gate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MUSE_API_KEY: ${{ secrets.MUSE_API_KEY }}
+          OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
+        run: python -m merge_gate ci --out gate_result.json
+
+      - name: Keep the verdict report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge-gate-report
+          path: gate_result.json
