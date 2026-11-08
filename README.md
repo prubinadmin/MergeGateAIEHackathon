@@ -11,7 +11,7 @@ Benchmark numbers: [`benchmark/RESULTS.md`](benchmark/RESULTS.md). Pitch and Q&A
 
 How a PR goes through the gate:
 
-1. Muse Spark (Meta) writes **spec-only tests** from the issue and the public interface. It never sees the PR's tests.
+1. Muse Spark (Meta) writes **spec-only tests** from the issue and the public interface. It never sees the PR's tests. The live demo runs the `muse-wonder-1.0` model (`MUSE_MODEL`), which we measured faster than Spark 1.3 on this prompt.
 2. The sandbox runs them on base, then on head (`git archive` copy, scrubbed env, timeout).
 3. Deterministic rules **R1–R14** look for gaming (deleted or skipped tests, weakened asserts, mocked subject, hardcoded outputs, out-of-scope test edits), dangerous calls, backdoor literals, unparseable files, and quality regressions.
 4. Plain code (`decide()` in `merge_gate/verify.py`) turns the evidence into **BLOCK / REVIEW / PASS**. No LLM decides.
