@@ -33,7 +33,16 @@ def _report(verdict="BLOCK"):
     ("block demo-2: breaks refunds", Command("block", "demo-2", "breaks refunds")),
     ("approve demo-1", Command("approve", "demo-1")),
     ("run merge gate on demo-1", Command("verify", "demo-1")),
-    ("verify PR #7 in owner/repo", Command("github")),
+    ("verify PR #7 in owner/repo", Command("verify", "owner/repo#7")),
+    ("verify psf/requests", Command("verify", "psf/requests")),
+    ("check psf/requests#6900 please", Command("verify", "psf/requests#6900")),
+    ("https://github.com/psf/requests/pull/6900", Command("verify", "https://github.com/psf/requests/pull/6900")),
+    ("verify vllm", Command("verify", "vllm")),
+    ("verify it", Command("verify")),  # not a repo word: "Which PR?"
+    ("why gh:psf/requests#6900", Command("why", "gh:psf/requests#6900")),
+    ("block gh:acme/Shop#1 breaks refunds", Command("block", "gh:acme/Shop#1", "breaks refunds")),
+    ("status", Command("status")),
+    ("what's the status?", Command("status")),
     ('{"action": "why", "pr_id": "demo-1"}', Command("why", "demo-1")),
     ('{"action": "block", "pr_id": "demo-2"}', Command("block", "demo-2")),
     ('{"action": "approve", "pr_id": "demo-2"}', Command("approve", "demo-2")),  # card JSON can't approve either
@@ -300,3 +309,149 @@ def test_stats_do_not_count_chat_block_requests_as_owner_actions(tmp_path, monke
     finally:
         srv.shutdown()
     assert stats["owner_blocks"] == 1 and stats["owner_replies"] == 1
+
+
+# --- ASI:One intent parsing: fallback only, strict schema, re-validated by code ------------------------------
+
+
+def _fake_asi_one(monkeypatch, content, key="test-key-not-secret"):
+    """Fake api.asi1.ai at the urllib boundary; content is the model's JSON answer (or an Exception to raise)."""
+    import urllib.request
+
+    from test_github_pr import _Resp
+
+    calls: list[dict] = []
+    if key:
+        monkeypatch.setenv("ASI_ONE_API_KEY", key)
+    else:
+        monkeypatch.delenv("ASI_ONE_API_KEY", raising=False)
+
+    def urlopen(req, timeout=None):
+        assert req.full_url == agent.ASI_ONE_URL and req.get_header("Authorization") == f"Bearer {key}"
+        calls.append({**json.loads(req.data), "timeout": timeout})
+        if isinstance(content, Exception):
+            raise content
+        return _Resp(json.dumps({"choices": [{"message": {"content": json.dumps(content)}}]}).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return calls
+
+
+def test_llm_fallback_parses_what_keywords_cannot(monkeypatch):
+    calls = _fake_asi_one(monkeypatch, {"kind": "why", "pr_id": "demo-1", "github_query": None, "note": None})
+    s = FakeState()
+    s.reports["demo-1"] = _report()
+    out = _run("so, um, what did you find in the first demo?", s)
+    assert "R1_DELETED_TEST" in out[0][0] and s.calls == []  # a validated "why demo-1", no gate run
+    body = calls[0]
+    assert body["model"] == "asi1-mini" and body["timeout"] == 8
+    assert body["response_format"]["type"] == "json_schema" and body["response_format"]["json_schema"]["strict"] is True
+    assert body["response_format"]["json_schema"]["schema"]["properties"]["kind"]["enum"] == list(agent._LLM_KINDS)
+    assert "untrusted" in body["messages"][0]["content"] and body["messages"][1]["content"].startswith("so, um")
+    assert store.read(kind="chat_command")[-1]["data"]["kind"] == "why"  # the trajectory logs the final command
+
+
+def test_llm_is_not_consulted_when_keywords_understand(monkeypatch):
+    calls = _fake_asi_one(monkeypatch, {"kind": "list", "pr_id": None, "github_query": None, "note": None})
+    s = FakeState()
+    _run("verify demo-1", s)
+    _run("list PRs", s)
+    assert calls == [] and len(s.calls) == 1
+
+
+@pytest.mark.parametrize("content", [
+    {"kind": "approve", "pr_id": "demo-1", "github_query": None, "note": None},  # not in the enum
+    {"kind": "verify", "pr_id": "demo-9", "github_query": None, "note": None},  # unknown PR
+    {"kind": "verify", "pr_id": None, "github_query": "not a repo query", "note": None},
+    {"kind": "verify", "pr_id": "demo-1; rm -rf /", "github_query": None, "note": None},
+    "not even an object",
+    TimeoutError("timed out"),
+])
+def test_invalid_or_failed_llm_output_is_help(monkeypatch, content):
+    _fake_asi_one(monkeypatch, content)
+    s = FakeState()
+    out = _run("do the thing", s)
+    assert out == [(agent.HELP, None)] and s.calls == []
+
+
+def test_llm_fallback_can_name_a_github_query_and_a_block_note(monkeypatch):
+    _fake_asi_one(monkeypatch, {"kind": "block", "pr_id": "demo-2", "github_query": None, "note": "it deletes a test"})
+    logged = []
+    monkeypatch.setattr("agents.merge_gate_agent.store.log_reply", lambda *a: logged.append(a))
+    _run("please make sure the second demo does not land", FakeState(), sender=SENDER)
+    assert logged == [("demo-2", SENDER, "chat_block_request", "BLOCK it deletes a test", "block_request_recorded")]
+    assert agent._validated({"kind": "verify", "pr_id": None, "github_query": "psf/requests#6900", "note": None}, set()) == Command("verify", "psf/requests#6900")
+
+
+def test_without_a_key_the_fallback_is_skipped_silently(monkeypatch):
+    calls = _fake_asi_one(monkeypatch, {"kind": "list"}, key="")
+    assert _run("do the thing", FakeState()) == [(agent.HELP, None)] and calls == []
+
+
+# --- verify <github query>: a live public GitHub PR through the chat ----------------------------------------
+
+
+def test_github_verify_resolves_clones_registers_and_replies(tmp_path, monkeypatch):
+    import shutil
+
+    from test_github_pr import _bare_with_pull_ref, _fake_github, _pr_json
+
+    state = _demo_state(tmp_path, monkeypatch)
+    bare, sha = _bare_with_pull_ref(tmp_path)
+    pr_json = {**_pr_json("acme/shop", 1), "head": {"sha": sha}, "title": "Speed up apply_discount", "user": {"login": "coding-agent"}}
+    calls = _fake_github(monkeypatch, lambda path: pr_json if path == "/repos/acme/shop/pulls/1" else pytest.fail(path))
+    monkeypatch.setattr(agent.github_pr, "default_clone_url", lambda owner, repo: bare)  # the clone itself is real
+    logged = []
+    monkeypatch.setattr("agents.merge_gate_agent.store.log_reply", lambda *a: logged.append(a))
+
+    out = _run("verify acme/shop#1", state)
+    try:
+        assert out[0] == ("Found https://github.com/acme/shop/pull/1. Cloning and running the gate... big repos take minutes.", None)
+        text, card = out[1]
+        assert text.startswith("BLOCK: gh:acme/shop#1") and "R1_DELETED_TEST" in text
+        assert "Would page Peter <peter@example.com> (public repo: no phone on file, nothing sent)" in text
+        assert card["card_kind"] == "custom" and "gh:acme/shop#1" in card["card_payload"]
+        assert calls == [("/repos/acme/shop/pulls/1", "Bearer test-token")]
+        assert state.prs["gh:acme/shop#1"].head_ref == "pr-1" and state.reports["gh:acme/shop#1"].verdict == "BLOCK"
+        # why and block now work on the registered id; the owner is never paged (no phone, notifier is None)
+        assert "R1_DELETED_TEST" in _run("why gh:acme/shop#1", state)[0][0]
+        _run("block gh:acme/shop#1 not now", state, sender=SENDER)
+        assert logged[-1][:3] == ("gh:acme/shop#1", SENDER, "chat_block_request")
+        assert store.read(kind="verdict")[-1]["data"]["source"] == "asi-one"
+    finally:
+        shutil.rmtree(state.prs["gh:acme/shop#1"].repo_path, ignore_errors=True)
+
+
+def test_github_lookup_failure_is_a_clear_reply(tmp_path, monkeypatch):
+    from test_github_pr import _fake_github
+
+    _fake_github(monkeypatch, lambda path: [])  # no open PRs
+    out = _run("verify acme/empty", FakeState())
+    assert len(out) == 1 and out[0][0].startswith("The gate failed: GitHubError: acme/empty has no open pull requests")
+
+
+def test_unknown_demo_id_is_never_a_github_query():
+    assert not agent.is_github_query("demo-9") and not agent.is_github_query("") and not agent.is_github_query("gh:acme/shop#1")
+    assert agent.is_github_query("psf/requests") and agent.is_github_query("vllm") and agent.is_github_query("https://github.com/psf/requests/pull/1")
+
+
+# --- status -------------------------------------------------------------------------------------------------
+
+
+def test_status_lists_last_run_per_pr_with_specialist_timings(monkeypatch):
+    monkeypatch.delenv("ASI_ONE_API_KEY", raising=False)
+    s = FakeState()
+
+    async def run(pr_id):
+        return _report(), ["Rules agent: done in 3 ms", "OwnerRouter agent: done in 5 ms"]
+
+    assert "no runs yet" in _run("status", s)[0][0]
+    store.log_report(_report(), source="asi-one", ms=1234)
+    _run("verify demo-1", s, run=run)
+    text = _run("status", s, use_llm=True)[0][0]
+    assert text.startswith("Merge Gate status\n- demo-1: BLOCK at 20") and "1234 ms" in text
+    assert "    Rules agent: done in 3 ms\n    OwnerRouter agent: done in 5 ms" in text
+    assert "Specialists: Rules, OwnerRouter, TestWriter, Sandbox" in text
+    assert "Muse Spark (TestWriter + Sandbox): on; ASI:One intent parsing (fallback only): off (no ASI_ONE_API_KEY)" in text
+    assert "Budget: 420 s per gate run, 600 s for a GitHub clone" in text
+    assert _run("status", s)[-1][1] is None  # text only, no card

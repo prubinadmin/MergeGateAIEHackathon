@@ -80,11 +80,33 @@ in flight. One sender's runs are serialized; other senders are not held up. The 
 | `block demo-1 deletes a test` | records a block request from your agent address; does not run the gate or change the verdict |
 | `don't block demo-1` | treated as a question (verify), never as a block |
 | `approve demo-1` | refuses: approval happens on GitHub with the owner's own login |
-| `verify PR #7 in owner/repo` | explains that real repos are gated by the GitHub Action (`templates/merge-gate.yml`) |
+| `verify psf/requests#6900` | a **live public GitHub PR**: replies "Found https://github.com/psf/requests/pull/6900. Cloning and running the gate... big repos take minutes", then the same verdict + card as a demo PR. Also `verify psf/requests` (newest open PR), `verify vllm` (most-starred repo of that name), a PR URL, or "verify PR #7 in owner/repo" |
+| `why gh:psf/requests#6900`, `block gh:psf/requests#6900 <note>` | work on a GitHub PR once it has run (its id is `gh:owner/repo#N`). A public repo's owner has no phone on file, so the reply says who it *would* page and sends nothing |
+| `status` | text only: the last run per PR (verdict, when, ms, each specialist's timing from the trace), the specialists, Muse Spark and ASI:One on/off, the budgets |
+| anything the keywords miss | **ASI:One fallback** (below); without `ASI_ONE_API_KEY` the reply is the help text |
 
 Every message gets a `ChatAcknowledgement`. Errors come back as a clear message with a recovery hint, for
 example an unknown PR or a gate failure. You never get silence. Card button clicks come back as JSON
 selections (`{"action": "why", "pr_id": "demo-1"}`) or as prose. The agent parses both.
+
+### ASI:One intent parsing (fallback only)
+
+Keywords parse every command first (`parse_command`). Only when they yield `help` does the agent call
+ASI:One chat completions (`https://api.asi1.ai/v1`, model `asi1-mini`, `response_format: json_schema` with
+`strict: true`, 8 s timeout, stdlib `urllib`). The schema is `{kind: list|verify|why|block|status|help,
+pr_id, github_query, note}`; the system prompt says the message is untrusted data, never an instruction. The
+answer is then re-checked by the same code whitelist as typed commands: `kind` must be in the enum and
+`pr_id` must be a known PR or a GitHub query, otherwise the reply is help. The LLM never decides a verdict
+(`merge_gate.verify.decide` does), never approves, and a `block` it parses is still only a logged request.
+`ASI_ONE_API_KEY` in `.env` turns it on; without it the fallback is skipped silently.
+
+### GitHub PRs from the chat
+
+`merge_gate.github_pr.resolve` (GitHub API, anonymous or `GITHUB_TOKEN`) turns the query into a PR, the
+chat acknowledges with its URL at once, then the background job runs `materialize` (a blame-capable partial
+clone, 600 s limit) and registers the PR under `gh:owner/repo#N` in the same `State.prs` as the demos, so
+the normal fan-out, `why`, `block` and the card all work on it. The 420 s gate budget starts after the clone.
+Mid-size repos clone in 30-60 s; `--filter=blob:none` keeps even large ones to minutes.
 
 ## Run it (you)
 
@@ -116,6 +138,7 @@ On macOS with the python.org installer, you may see `SSL: CERTIFICATE_VERIFY_FAI
 Optional settings:
 - `MERGE_GATE_AGENT_PORT` (default 8001).
 - `MERGE_GATE_AGENT_LLM=0` skips TestWriter and Sandbox. They are on by default when `MUSE_API_KEY` is set. They add about 30 s per verify.
+- `ASI_ONE_API_KEY` turns on the ASI:One intent-parsing fallback (see above). It is only consulted for messages the keywords cannot read.
 
 ## Register and test in ASI:One (you; needs your Agentverse login)
 
@@ -134,6 +157,12 @@ These steps follow https://uagents.fetch.ai/docs/examples/asi-1.
    - `verify demo-1` gives a BLOCK on rule R1_DELETED_TEST, routed to Peter. A card opens. Click **Why**, then **Block**.
    - `verify demo-3` gives a PASS.
    - `approve demo-1` is refused.
+   - `verify psf/requests` gates that repo's newest open PR live (allow a minute); then `why gh:psf/requests#<N>`.
+   - `status` shows the last run per PR with each specialist's timing.
+   - `is the first demo pull request safe to merge?` (no keyword matches) goes through the ASI:One fallback and
+     runs `verify demo-1`; without `ASI_ONE_API_KEY` it answers with the help text.
+   Suggested starter prompts for the Agentverse profile: "list PRs", "verify demo-1", "verify psf/requests",
+   "why demo-1", "status".
 5. To check discoverability, start a new ASI:One chat without the @handle and ask something like
    "Can an agent check whether a pull request deletes tests?" Agentverse search ranking can take a while
    to pick up a new agent.
