@@ -132,8 +132,16 @@ def test_api_verify_message_reply(tmp_path, monkeypatch, fake_github, log_path):
         ok = post("/api/reply", {"pr_id": "demo-1", "text": "OK", "pr_url": "https://github.com/o/r/pull/7"})
         assert ok["action"] == "send_text" and "github.com" in ok["text"]
         blk = post("/api/reply", {"pr_id": "demo-1", "text": "BLOCK", "github": {"repo": "o/r", "number": 7}})
-        assert blk["action"] == "block_pr" and blk["github_blocked"] is True
+        # the decision answers at once; the GitHub calls run behind it and land on the log
+        assert blk["action"] == "block_pr" and blk["github_blocked"] == "pending"
+        import time as _t
+        deadline = _t.monotonic() + 10
+        while not store.read(kind="github_blocked") and _t.monotonic() < deadline:
+            _t.sleep(0.05)
+        assert store.read(kind="github_blocked")[-1]["data"]["ok"] is True
         assert any(c[2] and c[2].get("state") == "failure" for c in fake_github)
+        replies = [r["kind"] for r in store.read() if r["kind"] in ("reply", "github_blocked")]
+        assert replies.index("reply") < replies.index("github_blocked")  # logged first, GitHub after
         log = json.loads(urllib.request.urlopen(base + "/api/log", timeout=30).read())
         assert log["chain_ok"] and any(rec["kind"] == "reply" for rec in log["records"])
     finally:

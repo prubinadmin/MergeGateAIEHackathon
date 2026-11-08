@@ -239,6 +239,21 @@ ALLOWED_ORIGINS = {
 } | {o.strip() for o in os.environ.get("MERGE_GATE_ORIGINS", "").split(",") if o.strip()}
 
 
+def _block_on_github_later(repo: str, number: int, owner: str, note: str, pr_id: str) -> None:
+    """The owner's BLOCK is already decided and logged; the three GitHub calls (head sha, failing status,
+    comment) take seconds, so they run here and land on the log as `github_blocked` when done."""
+    def work() -> None:
+        from . import github
+
+        try:
+            github.block_pr(repo, number, owner, note)
+            store.append("github_blocked", {"pr_id": pr_id, "repo": repo, "number": number, "ok": True})
+        except Exception as e:  # noqa: BLE001 - the page must learn the check did not turn red
+            store.append("github_blocked", {"pr_id": pr_id, "repo": repo, "number": number, "ok": False, "error": str(e)[:200]})
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 def _text_later(state: State, phone: str, text: str, r: VerdictReport) -> None:
     """A text from a background thread (Sendblue already has its 200): a failure is logged AND written to the run log
     as reply_send_failed, so a lost confirmation shows up in /api/log instead of vanishing."""
@@ -351,12 +366,40 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             except Exception as e:  # noqa: BLE001
                 send({"type": "error", "error": str(e)})
 
+        def _events(self) -> None:
+            """Server-Sent Events: each new owner reply and GitHub outcome, a few hundred ms after it is logged."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self._cors()
+            self.end_headers()
+            seen = len(store.read())
+            last_ping = time.monotonic()
+            try:
+                while True:
+                    recs = store.read()
+                    for rec in recs[seen:]:
+                        if rec["kind"] in ("reply", "github_blocked"):
+                            line = "data: " + json.dumps(rec, ensure_ascii=False) + "\n\n"
+                            self.wfile.write(line.encode("utf-8"))
+                            self.wfile.flush()
+                    seen = len(recs)
+                    if time.monotonic() - last_ping > 15:  # keep proxies (cloudflared) from closing an idle stream
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        last_ping = time.monotonic()
+                    time.sleep(0.25)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                return
+
         def do_GET(self) -> None:
             if not self._origin_ok():
                 return self._send(403, {"error": "origin not allowed"})
             try:
                 url = urllib.parse.urlparse(self.path)
                 q = dict(urllib.parse.parse_qsl(url.query))
+                if url.path == "/api/events":
+                    return self._events()
                 if url.path == "/api/run":
                     use = state.use_llm if "llm" not in q else q["llm"] in ("1", "true")
                     return self._stream(q.get("pr_id", ""), use)
@@ -411,15 +454,13 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 store.log_reply(r.pr_id, "unverified-sender", reply.command, reply.raw, "rejected")
                 return self._send(200, {"ignored": "sender is not this PR's owner"})
             owner = r.owners[0].name
+            store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)  # the decision, first: the page shows it now
             blocked = False
             gh = thread["github"]
             if action.kind == "block_pr" and gh.get("repo") and gh.get("number"):
-                from . import github
-
-                github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
-                blocked = True
+                _block_on_github_later(gh["repo"], int(gh["number"]), owner, reply.note, r.pr_id)
+                blocked = "pending"
             _teach_or_forget(state, inbound.phone, r, reply.note, action)
-            store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
 
             def answer() -> None:  # Muse can take seconds; Sendblue gets its 200 now, the owner gets the text after
                 _text_later(state, inbound.phone, imessage.converse(r, reply.raw, action, thread["pr_url"]), r)
@@ -469,14 +510,12 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     if action.kind == "forget":
                         return self._send(403, {"error": "forget requires a verified owner (reply by iMessage)"})
                     owner = r.owners[0].name if r.owners else "owner"
+                    store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
                     blocked = False
                     gh = body.get("github") or {}
                     if action.kind == "block_pr" and gh.get("repo") and gh.get("number"):
-                        from . import github
-
-                        github.block_pr(gh["repo"], int(gh["number"]), owner, reply.note)
-                        blocked = True
-                    store.log_reply(r.pr_id, owner, reply.command, reply.raw, action.kind)
+                        _block_on_github_later(gh["repo"], int(gh["number"]), owner, reply.note, r.pr_id)
+                        blocked = "pending"
                     return self._send(200, {"command": reply.command, "action": action.kind, "text": action.text, "github_blocked": blocked})
                 return self._send(404, {"error": "not found"})
             except KeyError as e:

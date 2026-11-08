@@ -4,7 +4,7 @@ import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
   API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode, getReplies, githubFor, prUrl, scanGithub,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode, getReplies, subscribeEvents, githubFor, prUrl, scanGithub,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -18,6 +18,7 @@ interface CaseState {
   bubbles: Bubble[];
   ownerBlocked: boolean;
   ownerSaid?: string;  // the owner's latest decision by text: BLOCK, OK, FALSE_ALARM
+  githubCheck?: 'updating' | 'red' | 'failed';  // the owner's BLOCK on the real GitHub PR
   startedAt: number;
 }
 
@@ -208,7 +209,14 @@ export default function WarRoom() {
   const reply = async (text: string) => {
     const id = sel;
     setReplyBusy(true);
-    patch(id, (c) => ({ ...c, bubbles: [...c.bubbles, { from: 'owner', text, at: now() }] }));
+    const cmd = text.trim().toUpperCase().replace(/\s+/g, '_');
+    const before = cases[id];
+    patch(id, (c) => ({
+      ...c,
+      bubbles: [...c.bubbles, { from: 'owner', text, at: now() }],
+      ...(cmd === 'BLOCK' ? { ownerBlocked: true, ownerSaid: 'BLOCK', githubCheck: githubFor(id) ? 'updating' as const : undefined } : {}),
+      ...(cmd === 'OK' || cmd === 'FALSE_ALARM' ? { ownerSaid: cmd } : {}),
+    }));
     try {
       uiReplies.current.push({ text, at: Date.now() });
       const r = await postReply(id, text, githubFor(id));
@@ -216,9 +224,14 @@ export default function WarRoom() {
         ...c,
         ownerBlocked: c.ownerBlocked || r.action === 'block_pr',
         ownerSaid: ['BLOCK', 'OK', 'FALSE_ALARM'].includes(r.command) ? r.command : c.ownerSaid,
+        githubCheck: r.github_blocked === true ? 'red' : c.githubCheck,
         bubbles: [...c.bubbles, { from: 'gate', text: r.text, at: now() }],
       }));
       refreshStats();
+    } catch (e) {
+      // the server refused: undo the optimistic change and say why
+      patch(id, (c) => ({ ...c, ownerBlocked: before?.ownerBlocked ?? false, ownerSaid: before?.ownerSaid, githubCheck: before?.githubCheck,
+        bubbles: [...c.bubbles, { from: 'gate', text: `Not applied: ${(e as Error).message}`, at: now() }] }));
     } finally {
       setReplyBusy(false);
     }
@@ -263,9 +276,30 @@ export default function WarRoom() {
         }
       } catch { /* gate unreachable: the banner already says so */ }
     };
-    tick();
-    const h = setInterval(tick, 2500);
-    return () => clearInterval(h);
+    const onEvent = (rec: { hash: string; kind: string; data: any }) => {
+      if (seenReplies.current?.has(rec.hash)) return;
+      seenReplies.current?.add(rec.hash);
+      if (rec.kind === 'github_blocked') {
+        patch(rec.data.pr_id, (c) => ({ ...c, githubCheck: rec.data.ok ? 'red' : 'failed' }));
+        return;
+      }
+      const raw = String(rec.data.raw || '');
+      const mine = uiReplies.current.findIndex((u) => u.text === raw && Date.now() - u.at < 15000);
+      if (mine >= 0) { uiReplies.current.splice(mine, 1); return; }  // pressed on this page: already shown
+      if (rec.data.action === 'rejected') return;
+      patch(rec.data.pr_id, (c) => ({
+        ...c,
+        ownerBlocked: c.ownerBlocked || rec.data.action === 'block_pr',
+        ownerSaid: ['BLOCK', 'OK', 'FALSE_ALARM'].includes(rec.data.command) ? rec.data.command : c.ownerSaid,
+        githubCheck: rec.data.action === 'block_pr' && !c.githubCheck ? 'updating' : c.githubCheck,
+        bubbles: [...c.bubbles, { from: 'owner', text: `${raw}  (from ${rec.data.owner}'s phone)`, at: now() }],
+      }));
+      refreshStats();
+    };
+    tick();  // marks what is already on the log as seen
+    let poll: ReturnType<typeof setInterval> | null = null;
+    const close = subscribeEvents(onEvent, () => { if (!poll) poll = setInterval(tick, 2500); });
+    return () => { close(); if (poll) clearInterval(poll); };
   }, [recorded, refreshStats]);
   // agentic: scan a live public GitHub PR, register it, then run the gate on it without another click
   const scan = async (query?: string) => {
@@ -439,7 +473,7 @@ export default function WarRoom() {
                     {!r && 'No verdict yet.'}
                     {r?.verdict === 'BLOCK' && `The evidence is conclusive, so the gate rejects it on its own. ${r.owners[0]?.name || 'The owner'} is told, with proof.`}
                     {r?.verdict === 'REVIEW' && !c.ownerBlocked && !c.ownerSaid && `Nothing is provably wrong, so the gate does not decide alone. ${r.owners[0]?.name || 'The owner'}, who wrote this code, decides by text.`}
-                    {r?.verdict === 'REVIEW' && c.ownerBlocked && `${r.owners[0]?.name || 'The owner'} replied BLOCK from their phone. The merge is closed and the GitHub check is red.`}
+                    {r?.verdict === 'REVIEW' && c.ownerBlocked && `${r.owners[0]?.name || 'The owner'} replied BLOCK by text. The merge is closed.${c.githubCheck === 'updating' ? ' Turning the GitHub check red…' : c.githubCheck === 'red' ? ' The GitHub check is red.' : c.githubCheck === 'failed' ? ' Could not reach GitHub to turn its check red.' : ''}`}
                     {r?.verdict === 'REVIEW' && !c.ownerBlocked && c.ownerSaid === 'OK' && `${r.owners[0]?.name || 'The owner'} replied OK. A text can never approve a merge, so they approve on GitHub with their own login.`}
                     {r?.verdict === 'REVIEW' && !c.ownerBlocked && c.ownerSaid === 'FALSE_ALARM' && `${r.owners[0]?.name || 'The owner'} called it a false alarm. Logged for the learning loop; the merge still needs their GitHub approval.`}
                     {r?.verdict === 'PASS' && `Every check passed. ${r.owners[0]?.name || 'The owner'} gets a one-line FYI.`}
@@ -620,7 +654,7 @@ export default function WarRoom() {
             </div>
             {c.ownerBlocked && (
               <div className="mx-auto mt-3 w-[300px] rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-2 text-[12px] text-red-200 flex items-center gap-2">
-                <Lock size={14} /> merge-gate check: failure · blocked by {r?.owners[0]?.name} from their phone
+                <Lock size={14} /> {c.githubCheck === 'updating' ? 'merge-gate check: turning red…' : c.githubCheck === 'failed' ? 'merge-gate check: GitHub unreachable' : 'merge-gate check: failure'} · blocked by {r?.owners[0]?.name} from their phone
               </div>
             )}
           </div>

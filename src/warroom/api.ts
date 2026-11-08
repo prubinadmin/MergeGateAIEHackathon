@@ -26,6 +26,17 @@ export async function getReplies(): Promise<{ hash: string; data: { pr_id: strin
   return (body.records || []).filter((r: any) => r.kind === 'reply');
 }
 
+export interface LogEvent { hash: string; kind: string; data: any }
+
+/** Push, not poll: each owner reply and GitHub outcome arrives a few hundred ms after it is logged.
+ *  Returns a function that closes the stream; onDown fires if the stream cannot be kept open. */
+export function subscribeEvents(onEvent: (e: LogEvent) => void, onDown: () => void): () => void {
+  let es: EventSource | null = new EventSource(API_BASE + '/api/events');
+  es.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch { /* ignore a malformed line */ } };
+  es.onerror = () => { if (es && es.readyState === EventSource.CLOSED) { es = null; onDown(); } };
+  return () => { es?.close(); es = null; };
+}
+
 export type Verdict = 'BLOCK' | 'REVIEW' | 'PASS';
 
 export interface Evidence {
@@ -113,7 +124,7 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
 // Without a reachable gate (e.g. the public site), replay a real recorded run instead of an empty error.
 // Captured from `python -m merge_gate serve` with curl into recorded-run.json (loaded only when needed).
 type Health = { ok: boolean; llm: boolean };
-type ReplyResult = { command: string; action: string; text: string; github_blocked: boolean };
+type ReplyResult = { command: string; action: string; text: string; github_blocked: boolean | 'pending' };
 interface Recording {
   recorded_at: string;
   health: Health;
