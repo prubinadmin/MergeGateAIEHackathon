@@ -299,7 +299,8 @@ def test_owner_tests_never_run_on_public_github_prs(demo, monkeypatch):
     pr = dataclasses.replace(demo["demo-1"], pr_id="gh:acme/shop#7")
     assert verify_mod._run_owner_tests(pr, 60, lambda n, st, **d: stages.append((n, st, d))) == []
     assert stages == [("owner_tests", "skipped", {"reason": "owner rules guard this codebase, not public GitHub repos"})]
-    stages.clear()  # a demo PR still runs them (real check_owner_tests, nothing taught -> no evidence)
-    monkeypatch.undo()
-    assert verify_mod._run_owner_tests(demo["demo-1"], 60, lambda n, st, **d: stages.append((n, st))) == []
-    assert ("owner_tests", "done") in stages
+    # a demo PR still reaches check_owner_tests (the stage reports "done"; the demo-PR behaviour is covered above)
+    calls = []
+    monkeypatch.setattr(owner_tests, "check_owner_tests", lambda pr, t: calls.append(pr.pr_id) or [])
+    verify_mod._run_owner_tests(demo["demo-1"], 60, lambda n, st, **d: stages.append((n, st)))
+    assert calls == ["demo-1"] and ("owner_tests", "done") in stages
