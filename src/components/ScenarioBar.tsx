@@ -56,10 +56,9 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
     setLastAnalyzedMsg(null);
 
     try {
-      // Run the pasted PR through the real gate: switch to the live view and hand it the URL.
-      window.location.hash = '#live';
-      window.dispatchEvent(new CustomEvent('merge-gate:scan', { detail: targetUrl }));
-      setLastAnalyzedMsg(`Sent ${targetUrl} to the live gate`);
+      const analyzedPr = await analyzeGitHubUrl(targetUrl);
+      onGitHubPrAnalyzed(analyzedPr);
+      setLastAnalyzedMsg(`Fetched & analyzed ${analyzedPr.id} from ${analyzedPr.repo} (${analyzedPr.diffSummary})`);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Failed to fetch Pull Request from GitHub. Ensure the link is a public GitHub PR URL.');
     } finally {
