@@ -286,3 +286,20 @@ def test_reply_and_webhook_teach_and_forget_end_to_end(demo, monkeypatch):
         assert state.notifier.sent[-1][1] == f'Forgot: {NAME} ("{SENTENCE}")'
     finally:
         httpd.shutdown()
+
+
+def test_owner_tests_never_run_on_public_github_prs(demo, monkeypatch):
+    """A gh: PR is a third-party repo: stored owner rules must not execute its code in the sandbox."""
+    import dataclasses
+
+    from merge_gate import verify as verify_mod
+
+    monkeypatch.setattr(owner_tests, "check_owner_tests", lambda *a, **k: pytest.fail("sandbox ran on a public repo"))
+    stages = []
+    pr = dataclasses.replace(demo["demo-1"], pr_id="gh:acme/shop#7")
+    assert verify_mod._run_owner_tests(pr, 60, lambda n, st, **d: stages.append((n, st, d))) == []
+    assert stages == [("owner_tests", "skipped", {"reason": "owner rules guard this codebase, not public GitHub repos"})]
+    stages.clear()  # a demo PR still runs them (real check_owner_tests, nothing taught -> no evidence)
+    monkeypatch.undo()
+    assert verify_mod._run_owner_tests(demo["demo-1"], 60, lambda n, st, **d: stages.append((n, st))) == []
+    assert ("owner_tests", "done") in stages

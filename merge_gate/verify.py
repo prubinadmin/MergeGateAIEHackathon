@@ -107,6 +107,10 @@ def _run_testgen(pr: PullRequest, timeout_s: int, steps: dict, emit) -> tuple[li
 
 
 def _run_owner_tests(pr: PullRequest, timeout_s: int, emit) -> list[Evidence]:
+    if pr.pr_id.startswith("gh:"):
+        # owner rules guard this codebase's files; a public repo's code must never run through them
+        emit("owner_tests", "skipped", reason="owner rules guard this codebase, not public GitHub repos")
+        return []
     from .owner_tests import check_owner_tests
 
     # stored owner rules: running them needs no model, so they run with or without Muse
