@@ -1,11 +1,10 @@
 """`python -m merge_gate serve`: HTTP API over the real gate, for the web UI and the iMessage webhook.
 
   GET  /api/health
-  GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo)
-  POST /api/github   {"query": "vllm" | "owner/repo" | "owner/repo#N" | PR URL} -> clones the live PR, returns it as a gate PR (pr_id gh:owner/repo#N) for /api/run
   GET  /api/demo                      demo PRs (builds the demo repo once, under runs/demo; or, with
                                       MERGE_GATE_DEMO_GITHUB=owner/name, that repo's open PRs, and each
                                       verdict is published back to the PR)
+  POST /api/github   {"query": "vllm" | "owner/repo" | "owner/repo#N" | PR URL} -> clones the live PR, returns it as a gate PR (pr_id gh:owner/repo#N) for /api/run
   POST /api/verify   {"pr_id": "demo-1"}                 -> verdict report (real rules, blame, sandbox, Muse)
        or          {"repo_path", "base_ref", "head_ref", "issue_text", "title", "opened_by", "pr_id"}
   POST /api/message  {"pr_id": "demo-1", "pr_url": ""}  -> {"to": owner, "text": iMessage text}
@@ -59,14 +58,14 @@ class State:
         self.notifier = imessage.notifier_from_env()
         # phone_key -> the PR that number was last messaged about (so a bare "BLOCK" reply has a target)
         self.threads: dict[str, dict] = {}
-        # MERGE_GATE_DEMO_GITHUB=owner/name: demo cases are that repo's open PRs, and verdicts go back to them.
-        self.github_repo = os.environ.get("MERGE_GATE_DEMO_GITHUB", "").strip()
-        self.github_prs: dict[str, object] = {}  # pr_id -> demo_github.GithubPr
-        self.published: dict[str, str] = {}  # pr_id -> what was posted to GitHub (or why not)
         # agentic paging: every verdict texts the code owner on its own (MERGE_GATE_AUTO_PAGE=0 turns it off)
         self.auto_page = os.environ.get("MERGE_GATE_AUTO_PAGE", "1") != "0"
         # (pr_id, run_hash) -> None, insertion-ordered: never re-page an identical result; the oldest fall out past 500
         self._paged: dict[tuple[str, str], None] = {}
+        # MERGE_GATE_DEMO_GITHUB=owner/name: demo cases are that repo's open PRs, and verdicts go back to them.
+        self.github_repo = os.environ.get("MERGE_GATE_DEMO_GITHUB", "").strip()
+        self.github_prs: dict[str, object] = {}  # pr_id -> demo_github.GithubPr
+        self.published: dict[str, str] = {}  # pr_id -> what was posted to GitHub (or why not)
 
     def demo(self, refresh: bool = False) -> list[PullRequest]:
         if self.github_repo:
@@ -156,6 +155,10 @@ class State:
             self.prs[pr.pr_id] = pr
             self.reports[pr.pr_id] = report
         self.publish(report)
+        g = self.github_prs.get(pr.pr_id)
+        if g:  # a real demo-repo PR: the owner's BLOCK reply must reach that PR's check
+            body = {**body, "pr_url": body.get("pr_url") or g.url,
+                    "github": body.get("github") or {"repo": self.github_repo, "number": g.number}}
         self._auto_page(report, body, on_stage, auto_page)
         return report
 
@@ -195,9 +198,9 @@ class State:
         key = (r.pr_id, r.run_hash)
         with self.lock:  # check+add as one step: two verifies of one result must never both page
             if dedupe and key in self._paged:
-                if r.verdict != "PASS":  # already texted: still attach what the caller knows (e.g. the GitHub PR)
+                if (pr_url or github) and r.verdict != "PASS":  # a later caller may know the GitHub PR
                     self._open_thread(phone, r.pr_id, pr_url, github or {})
-                return {**out, "skipped": "already paged for this exact result"}
+                return {**out, "skipped": "already paged for this exact result", "sent": "already sent"}
             self._paged[key] = None
             if len(self._paged) > 500:
                 del self._paged[next(iter(self._paged))]

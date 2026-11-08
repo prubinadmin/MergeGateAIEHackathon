@@ -4,7 +4,7 @@ import { BorderBeam } from '../components/ui/border-beam';
 import { AgentGraph, NodeKey } from './AgentGraph';
 import {
   API_BASE, DemoPr, Evidence, Report, RULE_LABEL, RULES, RunEvent, StageEvent, StageStatus, Stats,
-  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, scanGithub, subscribeMode, getReplies, githubFor, prUrl,
+  getDemo, getHealth, getMessage, getStats, pageOwner, postReply, recordedAt, replayMode, runGate, subscribeMode, getReplies, githubFor, prUrl, scanGithub,
 } from './api';
 
 interface Bubble { from: 'gate' | 'owner'; text: string; at: string }
@@ -31,7 +31,7 @@ function nodeStates(c: CaseState): Record<NodeKey, StageStatus> {
     writer: st('testgen'),
     sandbox: st('testgen'),
     decide: st('decide'),
-    phone: c.bubbles.length ? 'done' : st('summary') === 'start' ? 'start' : 'idle',
+    phone: c.bubbles.length || st('page') === 'done' ? 'done' : st('summary') === 'start' || st('page') === 'start' ? 'start' : 'idle',
     merge: c.report ? 'done' : 'idle',
   };
 }
@@ -234,22 +234,6 @@ export default function WarRoom() {
     }
   };
 
-  // agentic: scan a live public GitHub PR, register it, then run the gate on it without another click
-  const scan = async () => {
-    const q = gh.query.trim();
-    if (!q || gh.busy || running) return;
-    setGh((g) => ({ ...g, busy: true, note: `Finding and cloning ${q}… (big repos take a few minutes)` }));
-    try {
-      const d = await scanGithub(q);
-      setPrs((all) => [...all.filter((p) => p.pr_id !== d.pr_id), d]);
-      setGh({ query: '', busy: false, note: `Scanning ${d.repo}#${d.number}: ${d.title}` });
-      setSel(d.pr_id);
-      run(d.pr_id);
-    } catch (e) {
-      setGh((g) => ({ ...g, busy: false, note: (e as Error).message }));
-    }
-  };
-
   // Show replies that arrive from a real phone (Sendblue webhook) in the phone panel. Live gate only.
   useEffect(() => {
     if (recorded) return;
@@ -277,6 +261,21 @@ export default function WarRoom() {
     const h = setInterval(tick, 2500);
     return () => clearInterval(h);
   }, [recorded, refreshStats]);
+  // agentic: scan a live public GitHub PR, register it, then run the gate on it without another click
+  const scan = async () => {
+    const q = gh.query.trim();
+    if (!q || gh.busy || running) return;
+    setGh((g) => ({ ...g, busy: true, note: `Finding and cloning ${q}… (big repos take a few minutes)` }));
+    try {
+      const d = await scanGithub(q);
+      setPrs((all) => [...all.filter((p) => p.pr_id !== d.pr_id), d]);
+      setGh({ query: '', busy: false, note: `Scanning ${d.repo}#${d.number}: ${d.title}` });
+      setSel(d.pr_id);
+      run(d.pr_id);
+    } catch (e) {
+      setGh((g) => ({ ...g, busy: false, note: (e as Error).message }));
+    }
+  };
 
   const pr = prs.find((p) => p.pr_id === sel);
   const c = cases[sel] || EMPTY;
@@ -502,12 +501,43 @@ export default function WarRoom() {
               )}
             </Lane>
 
+            <Lane title="OWNER RULES (TAUGHT BY TEXT)" ev={c.stages.owner_tests}>
+              {c.stages.owner_tests?.status === 'done' && (
+                (c.stages.owner_tests.evidence || []).length
+                  ? <span className="text-red-300">{c.stages.owner_tests.evidence.length} rule{c.stages.owner_tests.evidence.length === 1 ? '' : 's'} an owner taught failed: {c.stages.owner_tests.evidence.map((e: Evidence) => e.detail).join('; ')}</span>
+                  : <span className="text-zinc-400">No rule an owner taught by text fails on this PR.</span>
+              )}
+            </Lane>
+
             <Lane title="DECIDE() · PLAIN CODE" ev={c.stages.decide}>
-              {c.stages.decide && <span>Verdict <b>{c.stages.decide.verdict}</b> from {r?.evidence.length ?? '…'} evidence items · gate {c.stages.decide.gate_version}</span>}
+              {c.stages.decide && (
+                <span>Verdict <b>{c.stages.decide.verdict}</b> from {r?.evidence.length ?? ['rules', 'testgen', 'owner_tests'].reduce((n, k) => n + ((c.stages[k]?.evidence || []).length), 0)} evidence items · gate {c.stages.decide.gate_version}</span>
+              )}
+            </Lane>
+
+            <Lane title="ROUTING (SUBQ SNAP)" ev={c.stages.routing}>
+              {c.stages.routing?.status === 'start' && <span className="text-zinc-400">Asking SubQ who should get this and how urgently…</span>}
+              {c.stages.routing?.status === 'skipped' && <span className="text-zinc-500">Skipped ({c.stages.routing.reason}); git blame picks the owner.</span>}
+              {c.stages.routing?.status === 'done' && (
+                <span>
+                  Goes to <b>{c.stages.routing.to?.name || 'the code owner'}</b>
+                  {' · '}{c.stages.routing.routed_by === 'subq' ? `picked by SubQ (${Math.round(100 * (c.stages.routing.route_confidence ?? 0))}% sure)` : 'git blame owner kept'}
+                  {c.stages.routing.urgency && <> · urgency <b>{c.stages.routing.urgency}</b></>}
+                </span>
+              )}
             </Lane>
 
             <Lane title="MESSAGE TO THE OWNER" ev={c.stages.summary}>
               {c.stages.summary?.summary && <span>“{c.stages.summary.summary}”</span>}
+            </Lane>
+
+            <Lane title="TEXT TO THE OWNER'S PHONE" ev={c.stages.page}>
+              {c.stages.page?.status === 'start' && <span className="text-zinc-400">Sending the iMessage…</span>}
+              {c.stages.page?.status === 'done' && (
+                c.stages.page.error ? <span className="text-amber-300">Not texted: {c.stages.page.error}</span>
+                  : c.stages.page.skipped ? <span className="text-zinc-400">Not texted: {c.stages.page.skipped}</span>
+                    : <span>Texted <b>{c.stages.page.to?.name || c.stages.page.to || 'the owner'}</b>{c.stages.page.urgency === 'fyi' ? ' a one-line FYI' : ''} · {String(c.stages.page.sent)}</span>
+              )}
             </Lane>
 
             {r && (
@@ -527,7 +557,7 @@ export default function WarRoom() {
                 const manual = paging[sel];
                 const status = manual?.status === 'sending' ? 'sending' : manual ? manual.status
                   : auto?.status === 'start' ? 'sending'
-                  : auto?.status === 'done' ? (auto.sent ? 'sent' : auto.skipped ? 'skipped' : 'error') : null;
+                  : auto?.status === 'done' ? (auto.skipped ? 'skipped' : auto.sent ? 'sent' : 'error') : null;
                 const note = manual ? manual.note
                   : auto?.sent ? `Texted ${auto.to} automatically, ${String(auto.text || '').startsWith('FYI') ? 'as an FYI' : 'with the evidence'}.`
                   : auto?.skipped ? `${auto.to || 'Owner'} already has this exact result; not texting twice.`
