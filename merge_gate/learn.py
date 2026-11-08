@@ -90,9 +90,9 @@ def collect_raw(cases: list[Case], use_llm: bool = False, workers: int = 6) -> d
     return {c.pr.pr_id: r for c, r in zip(cases, reports)}
 
 
-def _bump(level: str, up: bool) -> str:
+def _bump(level: str, up: bool, step: int = 1) -> str:
     i = LEVELS.index(level)
-    return LEVELS[min(len(LEVELS) - 1, i + 1)] if up else LEVELS[max(0, i - 1)]
+    return LEVELS[min(len(LEVELS) - 1, i + step)] if up else LEVELS[max(0, i - step)]
 
 
 def propose(
@@ -100,8 +100,19 @@ def propose(
     raw: dict[str, VerdictReport],
     train: list[Case],
     false_alarms: list[str],
+    policy=None,
 ) -> list[GateConfig]:
-    """Single-change candidates. false_alarms = pr_ids an owner marked FALSE ALARM."""
+    """Candidate configs. false_alarms = pr_ids an owner marked FALSE ALARM.
+
+    policy (rsi.LearnerPolicy) says HOW to propose: step size, which evidence sources, whether to try pairs.
+    It never touches what gets adopted; that floor lives in learn_round. Default: the adopted policy in
+    learner_versions/, else today's behaviour (step 1, owner feedback + train misses, single changes).
+    """
+    from itertools import combinations
+
+    from .rsi import load_policy
+
+    policy = policy or load_policy()
     current = rescore(raw, cfg)
     seen: set[tuple[str, str]] = set()
     cands: list[GateConfig] = []
@@ -113,24 +124,50 @@ def propose(
         new = GateConfig(version="", rule_severity={**cfg.rule_severity, rule: level}, parent=cfg.version, change=why)
         cands.append(new)
 
-    for pr_id in false_alarms:
-        r = current.get(pr_id)
-        if not r:
-            continue
-        for e in r.evidence:
-            if e.id.startswith("owner::"):  # an owner's own rule is never downgraded by learning
-                continue
-            k = knob(e)
-            add(k, _bump(e.severity, up=False), f"owner marked {pr_id} FALSE ALARM; {k} {e.severity} -> {_bump(e.severity, up=False)}")
+    def down(level: str) -> str:
+        return _bump(level, up=False, step=policy.step)
 
-    for c in train:
-        r = current.get(c.pr.pr_id)
-        if c.label.true_verdict == "BLOCK" and r and r.verdict != "BLOCK":
-            for e in raw[c.pr.pr_id].evidence:
+    def up(level: str) -> str:
+        return _bump(level, up=True, step=policy.step)
+
+    if "false_alarm" in policy.sources:
+        for pr_id in false_alarms:
+            r = current.get(pr_id)
+            if not r:
+                continue
+            for e in r.evidence:
+                if e.id.startswith("owner::"):  # an owner's own rule is never downgraded by learning
+                    continue
                 k = knob(e)
-                level = _rule_level(cfg, k, e.severity)
-                if level != "block":
-                    add(k, _bump(level, up=True), f"{c.pr.pr_id} ({c.label.kind}) got through; {k} {level} -> {_bump(level, up=True)}")
+                add(k, down(e.severity), f"owner marked {pr_id} FALSE ALARM; {k} {e.severity} -> {down(e.severity)}")
+
+    if "missed_train" in policy.sources:
+        for c in train:
+            r = current.get(c.pr.pr_id)
+            if c.label.true_verdict == "BLOCK" and r and r.verdict != "BLOCK":
+                for e in raw[c.pr.pr_id].evidence:
+                    k = knob(e)
+                    level = _rule_level(cfg, k, e.severity)
+                    if level != "block":
+                        add(k, up(level), f"{c.pr.pr_id} ({c.label.kind}) got through; {k} {level} -> {up(level)}")
+
+    if "noisy_rule" in policy.sources:
+        # a knob that blocked a labelled-clean train PR and never fired on a labelled-bad one: no owner reply needed
+        on_bad = {knob(e) for c in train if c.label.true_verdict == "BLOCK" for e in raw[c.pr.pr_id].evidence}
+        for c in train:
+            r = current.get(c.pr.pr_id)
+            if c.label.true_verdict == "PASS" and r and r.verdict == "BLOCK":
+                for e in r.evidence:
+                    k = knob(e)
+                    if e.severity == "block" and k not in on_bad and not e.id.startswith("owner::"):
+                        add(k, down("block"), f"{k} blocked clean {c.pr.pr_id} and never fired on a bad train PR; block -> {down('block')}")
+
+    if policy.combine:
+        singles = [(next(iter(set(c.rule_severity.items()) - set(cfg.rule_severity.items()))), c.change) for c in cands]
+        for ((ka, la), wa), ((kb, lb), wb) in combinations(singles, 2):
+            if ka != kb:
+                cands.append(GateConfig(version="", rule_severity={**cfg.rule_severity, ka: la, kb: lb}, parent=cfg.version,
+                                        change=f"{wa} + {wb}"))
     return cands
 
 
@@ -173,8 +210,14 @@ def learn_round(
     false_alarms: list[str],
     cfg: GateConfig | None = None,
     dir_: str = VERSIONS_DIR,
+    policy=None,
+    log: bool = True,
 ) -> dict:
-    """One round: propose from train + feedback, score on held-out, adopt the best or roll back."""
+    """One round: propose from train + feedback, score on held-out, adopt the best or roll back.
+
+    policy: how to propose (rsi.LearnerPolicy; default = the adopted one). log=False for a trial round the
+    meta-learner runs in a scratch dir: it must not enter the hash-chained run log as a real version.
+    """
     cfg = cfg or load_current(dir_)
     if not os.path.exists(os.path.join(dir_, f"{cfg.version}.json")):
         _save(cfg, dir_, make_current=True)
@@ -185,7 +228,7 @@ def learn_round(
 
     decisions = []
     best: tuple[GateConfig, dict] | None = None
-    for cand in propose(cfg, raw, train, false_alarms):
+    for cand in propose(cfg, raw, train, false_alarms, policy):
         s = score(held, rescore(raw, cand))
         train_fb = score(train, rescore(raw, cand))["false_block_rate"]  # veto: never add a false block on a labelled clean train PR
         ok = _better(s, best[1] if best else base_scores) and train_fb <= base_train_fb
@@ -201,7 +244,8 @@ def learn_round(
     else:
         result = {"from": cfg.version, "to": cfg.version, "adopted": None, "heldout_before": base_scores, "heldout_after": base_scores}
     result["candidates"] = decisions
-    store.append("gate_version", result)
+    if log:
+        store.append("gate_version", result)
     return result
 
 

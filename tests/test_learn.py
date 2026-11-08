@@ -13,6 +13,7 @@ from merge_gate.schema import Evidence, Owner, VerdictReport
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "LOG_PATH", str(tmp_path / "log.jsonl"))
+    monkeypatch.chdir(tmp_path)  # a learner_versions/ or gate_versions/ in the repo root must not leak in
     return tmp_path
 
 

@@ -97,7 +97,7 @@ def _run_testgen(pr: PullRequest, timeout_s: int, steps: dict, emit) -> tuple[li
     elif tg.dropped_invariants:
         notes.append(f"dropped {len(tg.dropped_invariants)} generated tests that failed on base")
     emit(
-        "testgen", "done", ms=ms, error=tg.error, source=tg.source,
+        "testgen", "done", ms=ms, error=tg.error, source=tg.source, writers=tg.writers,
         kept=tg.kept_invariants, dropped=tg.dropped_invariants,
         base={"passed": tg.base.passed, "failed": len(tg.base.failed), "hash": tg.base.output_hash} if tg.base else None,
         head={"passed": tg.head.passed, "failed": len(tg.head.failed), "hash": tg.head.output_hash} if tg.head else None,

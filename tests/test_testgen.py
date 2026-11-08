@@ -66,6 +66,7 @@ def test_extract_and_drop():
 
 def test_independent_check_classifies_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(testgen.llm, "complete", lambda dev, user, **kw: MODEL_OUTPUT)
+    monkeypatch.setattr(testgen, "writers", lambda: ["muse"])
     res = independent_check(_pr(tmp_path))
     assert res.error == ""
     assert res.dropped_invariants == ["test_invariant_wrong_on_base"]  # bad test, failed on base
@@ -81,5 +82,46 @@ def test_llm_outage_is_reported_not_silent(tmp_path, monkeypatch):
         raise testgen.llm.LLMError("down")
 
     monkeypatch.setattr(testgen.llm, "complete", boom)
+    monkeypatch.setattr(testgen, "writers", lambda: ["muse"])
     res = independent_check(_pr(tmp_path))
     assert "unavailable" in res.error and res.evidence == []
+
+
+GEMINI_OUTPUT = '''```python
+from shop.pricing import apply_discount
+
+
+def test_invariant_full_discount_is_free():
+    assert apply_discount(50, 100) == 0
+
+
+def test_issue_over_discount_floors_at_zero():
+    assert apply_discount(10, 150) == 0
+```'''
+
+
+def test_two_writers_tests_both_run_under_names_kept_apart(tmp_path, monkeypatch):
+    outputs = {"muse": MODEL_OUTPUT, "gemini": GEMINI_OUTPUT}
+    monkeypatch.setattr(testgen.llm, "complete", lambda dev, user, provider="muse", **kw: outputs[provider])
+    monkeypatch.setattr(testgen.llm, "model_name", lambda p="muse": {"muse": "muse-wonder-1.0", "gemini": "gemini-4-argon"}[p])
+    monkeypatch.setattr(testgen, "writers", lambda: ["muse", "gemini"])
+    res = independent_check(_pr(tmp_path))
+    assert res.error == "" and res.writers == ["muse-wonder-1.0", "gemini-4-argon"]
+    by_id = {e.id: e.severity for e in res.evidence}
+    assert by_id["gate::test_invariant_never_negative"] == "block"                  # Muse's names unchanged
+    assert by_id["gate::test_issue_gemini_over_discount_floors_at_zero"] == "review"  # Gemini's tagged, still classified
+    assert res.dropped_invariants == ["test_invariant_wrong_on_base"]                  # base filtering unchanged
+
+
+def test_one_writer_down_the_other_still_runs_and_the_gap_is_reported(tmp_path, monkeypatch):
+    def complete(dev, user, provider="muse", **kw):
+        if provider == "gemini":
+            raise testgen.llm.LLMError("quota")
+        return MODEL_OUTPUT
+
+    monkeypatch.setattr(testgen.llm, "complete", complete)
+    monkeypatch.setattr(testgen.llm, "model_name", lambda p="muse": p)
+    monkeypatch.setattr(testgen, "writers", lambda: ["muse", "gemini"])
+    res = independent_check(_pr(tmp_path))
+    assert res.writers == ["muse"] and "gemini: quota" in res.error
+    assert {e.id for e in res.evidence} >= {"gate::test_invariant_never_negative", "gate::test_issue_new_rounding"}

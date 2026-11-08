@@ -52,6 +52,7 @@ class TestGenResult:
     head: SandboxResult | None = None
     evidence: list[Evidence] = field(default_factory=list)
     error: str = ""
+    writers: list[str] = field(default_factory=list)  # model names whose tests ran, e.g. muse-wonder-1.0, gemini-4-argon
 
 
 def _strip_bodies(src: str, base_docs: dict[str, str]) -> str:
@@ -147,23 +148,64 @@ def _drop_tests(code: str, names: set[str]) -> str:
     return ast.unparse(tree) + "\n"
 
 
-def generate_tests(pr: PullRequest) -> str:
+def generate_tests(pr: PullRequest, provider: str = "muse") -> str:
     """Return pytest source written from the issue + interface only."""
     interface = public_interface(pr)
     if not interface:
         raise ValueError("no public interface in the changed modules")
     user = f"ISSUE\n{pr.title}\n{pr.issue_text or '(no issue text)'}\n\nPUBLIC INTERFACE\n```python\n{interface}\n```"
-    return _extract_code(llm.complete(DEVELOPER_PROMPT, user))
+    return _extract_code(llm.complete(DEVELOPER_PROMPT, user, provider=provider))
+
+
+def writers() -> list[str]:
+    """Spec-test writers: Muse always; Gemini (gemini-4-argon) too when GEMINI_API_KEY is set.
+
+    Two labs, one PR must get past both. Neither sees the other's tests, the PR's tests or its diff."""
+    return ["muse"] + (["gemini"] if llm.has_key("gemini") else [])
+
+
+def _tag_tests(code: str, tag: str) -> str:
+    """test_issue_x -> test_issue_<tag>_x (same for test_invariant) so two writers' tests share one module."""
+    tree = ast.parse(code)
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for cls in ("test_issue", "test_invariant"):
+                if n.name.startswith(cls):
+                    n.name = f"{cls}_{tag}{n.name[len(cls):]}"
+                    break
+    return ast.unparse(tree) + "\n"
+
+
+def merge_sources(sources: dict[str, str]) -> str:
+    """One pytest module from several writers'; the first writer keeps its names, so single-writer output is unchanged."""
+    # ponytail: module bodies are concatenated; a helper two writers both define resolves to the later one
+    first, *rest = sources
+    parts = [sources[first]] + [_tag_tests(sources[w], w) for w in rest]
+    return "\n".join(p.rstrip("\n") for p in parts) + "\n"
+
+
+def _generate_or_error(pr: PullRequest, w: str) -> tuple[str, str | None, str | None]:
+    try:
+        return w, generate_tests(pr, w), None
+    except (llm.LLMError, SyntaxError, ValueError) as e:
+        return w, None, f"{llm.model_name(w)}: {e}"
 
 
 def independent_check(pr: PullRequest, timeout_s: int = 60) -> TestGenResult:
-    res = TestGenResult()
-    try:
-        res.source = generate_tests(pr)
-    except (llm.LLMError, SyntaxError, ValueError) as e:
-        res.error = f"test writer unavailable: {e}"
-        return res
-    return check_generated(pr, res.source, timeout_s)
+    from concurrent.futures import ThreadPoolExecutor
+
+    ws = writers()
+    with ThreadPoolExecutor(max_workers=len(ws)) as pool:  # both writers at once: Gemini adds no wall-clock time
+        outcomes = list(pool.map(lambda w: _generate_or_error(pr, w), ws))
+    sources = {w: s for w, s, _ in outcomes if s is not None}  # map keeps writer order: Muse stays first
+    errors = [err for _, _, err in outcomes if err]
+    if not sources:
+        return TestGenResult(error="test writer unavailable: " + "; ".join(errors))
+    res = check_generated(pr, merge_sources(sources), timeout_s)
+    res.writers = [llm.model_name(w) for w in sources]
+    if errors:  # the other writer's tests still ran; say who was missing
+        res.error = "; ".join(filter(None, [res.error, "test writer unavailable: " + "; ".join(errors)]))
+    return res
 
 
 def _split_invariants(names: list[str], failed_on_base: set[str]) -> tuple[list[str], list[str]]:

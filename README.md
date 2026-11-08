@@ -72,6 +72,7 @@ python scripts/analyze_test_cases.py test_cases/02_performance_latency_slowdown.
 python -m merge_gate serve            # HTTP API on 127.0.0.1:8787 for the web UI and the iMessage webhook
 python -m merge_gate log              # run log; checks the hash chain
 python -m merge_gate learn --llm      # one learning round on benchmark/ (results: benchmark/RESULTS.md)
+python -m merge_gate rsi --llm        # recursive round: tune the learner on held-out results, then let it tune the gate
 python -m merge_gate bench --llm      # score the gate on the 30 benchmark cases; --baseline llm|codeowners
 python -m merge_gate owner-tests list # rules owners taught the gate by text; `remove <id>` forgets one
 python -m merge_gate ci               # inside GitHub Actions: see templates/merge-gate.yml
@@ -266,6 +267,8 @@ Routing and paging
 Learning
 - Owner replies become tests: one sentence → one pytest test, kept only if it passes on base, stored under the owner's name, TEACH / FORGET (`merge_gate/owner_tests.py`, `python -m merge_gate owner-tests`)
 - Learning loop with held-out adoption; the learner tunes rule ids and the two spec-test evidence classes as knobs (`merge_gate/learn.py`, `gate_versions/`)
+- Two independent spec-test writers when `GEMINI_API_KEY` is set: Meta Muse and Gemini 4 Argon each write tests from the issue and the public interface alone; both sets run in the sandbox under tagged names, and a PR must get past both (`merge_gate/testgen.py` `writers`, `GEMINI_MODEL`)
+- Recursive self-improvement, one level up and with a fixed floor: the learner's own policy (step size, proposal sources, pairwise changes) is proposed, trialled in scratch copies, and adopted only when the gate it learns does better on held-out PRs; the adopted learner is the one that runs next. What a policy may never change: the held-out split, the adoption floor, the train false-block veto, `decide()` (`merge_gate/rsi.py`, `learner_versions/`, `python -m merge_gate rsi`)
 - Benchmark: 30 labelled PRs on a simulated six-author repo, 15 held-out; LLM-reads-the-diff and CODEOWNERS baselines; frozen results (`benchmark/build_cases.py`, `benchmark/cases/`, `merge_gate/bench.py`, `merge_gate/baselines.py`, `benchmark/RESULTS.md`)
 
 Enforcement and audit

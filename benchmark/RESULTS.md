@@ -38,6 +38,27 @@ catch does not drop, false-block does not rise, and one of them improves (`merge
 | 3 | same | none | no change (v2 stays) | 0.73 / 0.00 → 0.73 / 0.00 |
 
 No proposal was rolled back in these runs: round 2 had a single candidate and it improved held-out.
+
+## Recursive self-improvement round (`python -m merge_gate rsi --llm`, 2026-11-07, Muse model `muse-wonder-1.0`)
+
+The learner's own policy (step size, proposal sources, pairwise changes) is proposed and scored by the held-out
+result of the gate each candidate learner learns (`merge_gate/rsi.py`). Same floor as level 1; a policy may change
+what is proposed, never what is accepted. This run started from gate v1 (no `gate_versions/` on this clone) and
+learner p1 (today's learner). Wall clock 9:02 for 30 cases, dominated by Muse Wonder spec tests.
+
+| Candidate learner | Gate it learns | Held-out catch / false-block | Decision |
+| --- | --- | --- | --- |
+| p1 as on `main` (incumbent) | 1 candidate, none adopted | 0.64 / 0.00 | baseline |
+| step 1 → 2 | 1 tried, nothing adopted | 0.64 / 0.00 | roll back |
+| drop source false_alarm | 1 tried, nothing adopted | 0.64 / 0.00 | roll back |
+| drop source missed_train | 0 tried | 0.64 / 0.00 | roll back |
+| add source noisy_rule | 1 tried, nothing adopted | 0.64 / 0.00 | roll back |
+| combine False → True | 1 tried, nothing adopted | 0.64 / 0.00 | roll back |
+
+Result: learner p1 stays, gate v1 stays (held-out 0.64 / 0.00 → 0.64 / 0.00). No learner variant produced a gate
+that beat the incumbent's on held-out PRs, so nothing changed; the record is in the hash-chained run log as a
+`learner_version` entry. The adoption and roll-back paths are exercised in `tests/test_rsi.py`. With Muse Wonder,
+the v1 gate's held-out catch is 0.64 (7/11) against 0.55 with Muse Spark 1.3 above; same rules, stronger spec tests.
 Rollback is covered by `tests/test_learn.py` but was not triggered on this data.
 
 Why round 1 proposed nothing: the learner on `main` only tunes rules, but every train case that got

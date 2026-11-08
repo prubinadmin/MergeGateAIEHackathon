@@ -166,6 +166,35 @@ def _cmd_learn(args) -> int:
     return 0
 
 
+def _cmd_rsi(args) -> int:
+    """`merge-gate rsi`: improve the learner on held-out results, then let the improved learner improve the gate."""
+    from .bench import load_cases
+    from .learn import collect_raw, false_alarms_from_log, learn_round
+    from .rsi import meta_round
+
+    cases = load_cases(args.root)
+    if not cases:
+        print(f"no cases under {args.root}/cases", file=sys.stderr)
+        return 1
+    raw = collect_raw(cases, use_llm=_use_llm(args))
+    false_alarms = false_alarms_from_log()
+
+    def ho(s: dict) -> str:
+        return f"{s['catch_rate']:.2f} catch / {s['false_block_rate']:.2f} false-block"
+
+    meta = meta_round(cases, raw, false_alarms)
+    print(f"live gate: held-out {ho(meta['heldout_live'])}")
+    print(f"learner {meta['from']} -> {meta['to']}: {meta['adopted'] or 'no change'}  "
+          f"(gate the old learner learns: {ho(meta['heldout_before'])}; the new one: {ho(meta['heldout_after'])})")
+    for c in meta["candidates"]:
+        print(f"  {'KEEP' if c['adopted_so_far'] else 'roll back'}: learner {c['policy_change']} -> gate would adopt "
+              f"{c['gate_change'] or 'nothing'} ({c['candidates_tried']} tried); held-out {ho(c['heldout'])}")
+    gate = learn_round(cases, raw, false_alarms)  # the adopted policy is the one that proposes now
+    print(f"gate {gate['from']} -> {gate['to']}: {gate['adopted'] or 'no change'}  "
+          f"held-out {ho(gate['heldout_before'])} -> {ho(gate['heldout_after'])}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="merge-gate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -221,6 +250,10 @@ def main(argv: list[str] | None = None) -> int:
     ln = sub.add_parser("learn", help="one learning round: propose rule changes, keep them only if held-out PRs improve")
     _llm_flags(ln)
     ln.add_argument("--root", default="benchmark")
+
+    rs = sub.add_parser("rsi", help="recursive self-improvement round: tune the learner on held-out results, then let it tune the gate")
+    _llm_flags(rs)
+    rs.add_argument("--root", default="benchmark")
 
     b = sub.add_parser("bench", help="run the gate on benchmark cases and print metrics")
     b.add_argument("--root", default="benchmark")
@@ -329,6 +362,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "learn":
         return _cmd_learn(args)
+
+    if args.cmd == "rsi":
+        return _cmd_rsi(args)
 
 
     if args.cmd == "bench":

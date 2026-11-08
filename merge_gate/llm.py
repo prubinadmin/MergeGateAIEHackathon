@@ -21,6 +21,15 @@ import urllib.request
 
 DEFAULT_BASE_URL = "https://api.meta.ai/v1"
 DEFAULT_MODEL = "muse-spark-1.3"
+# Muse is the default writer; Gemini (gemini-4-argon) is a second, independent one from another lab. Both speak
+# chat/completions; they differ in env names, defaults and which role carries the instructions.
+PROVIDERS = {
+    "muse": {"key": "MUSE_API_KEY", "base": "MUSE_BASE_URL", "model": "MUSE_MODEL",
+             "default_base": DEFAULT_BASE_URL, "default_model": DEFAULT_MODEL, "system_role": "developer"},
+    "gemini": {"key": "GEMINI_API_KEY", "base": "GEMINI_BASE_URL", "model": "GEMINI_MODEL",
+               "default_base": "https://generativelanguage.googleapis.com/v1beta/openai", "default_model": "gemini-4-argon",
+               "system_role": "system"},
+}
 CACHE_DIR = os.path.join(".cache", "llm")
 
 
@@ -44,19 +53,25 @@ def load_dotenv(*paths: str) -> None:
                     os.environ[key] = value
 
 
-def has_key() -> bool:
+def has_key(provider: str = "muse") -> bool:
     load_dotenv()
-    return bool(os.environ.get("MUSE_API_KEY"))
+    return bool(os.environ.get(PROVIDERS[provider]["key"]))
 
 
-def _config() -> tuple[str, str, str]:
+def model_name(provider: str = "muse") -> str:
     load_dotenv()
-    key = os.environ.get("MUSE_API_KEY", "")
+    p = PROVIDERS[provider]
+    return os.environ.get(p["model"]) or p["default_model"]
+
+
+def _config(provider: str = "muse") -> tuple[str, str, str]:
+    load_dotenv()
+    p = PROVIDERS[provider]
+    key = os.environ.get(p["key"], "")
     if not key:
-        raise LLMError("MUSE_API_KEY is not set (.env or .env.local)")
-    base = os.environ.get("MUSE_BASE_URL") or DEFAULT_BASE_URL
-    model = os.environ.get("MUSE_MODEL") or DEFAULT_MODEL
-    return key, base.rstrip("/"), model
+        raise LLMError(f"{p['key']} is not set (.env or .env.local)")
+    base = os.environ.get(p["base"]) or p["default_base"]
+    return key, base.rstrip("/"), model_name(provider)
 
 
 def complete(
@@ -67,16 +82,18 @@ def complete(
     timeout_s: int = 180,
     retries: int = 4,
     use_cache: bool = True,
+    provider: str = "muse",
 ) -> str:
-    """One chat completion from Muse Spark; returns the message text.
+    """One chat completion from Muse (default) or Gemini; returns the message text.
 
-    Responses are cached on disk by request hash, so benchmark reruns and the demo are replayable offline.
+    Responses are cached on disk by request hash (the model is part of it), so benchmark reruns and the demo
+    are replayable offline.
     """
-    key, base, model = _config()
+    key, base, model = _config(provider)
     body: dict = {
         "model": model,
         "messages": [
-            {"role": "developer", "content": developer},
+            {"role": PROVIDERS[provider]["system_role"], "content": developer},
             {"role": "user", "content": user},
         ],
     }
@@ -117,7 +134,7 @@ def complete(
         if attempt < retries:
             time.sleep(min(30, 2**attempt) + random.random())
     else:
-        raise LLMError(f"Muse Spark call failed after {retries + 1} attempts: {last_err}")
+        raise LLMError(f"{model} call failed after {retries + 1} attempts: {last_err}")
 
     try:
         text = payload["choices"][0]["message"]["content"] or ""

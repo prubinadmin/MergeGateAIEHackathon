@@ -39,6 +39,9 @@ presenter laptop against the same page)
 - Real iMessage over Sendblue with a verified-phone, token-checked webhook; agentic auto-paging on every
   verdict; replies worded by Muse Spark from the verdict's facts, never claiming approval
 - Owner replies → tests (TEACH / FORGET), learning loop with held-out adoption (v1 → v2)
+- Recursive self-improvement with a fixed floor: the learner tunes its own proposal policy, each candidate
+  policy judged by the held-out result of the gate it learns; the adoption floor itself is not learnable
+  (`merge_gate/rsi.py`, `python -m merge_gate rsi`)
 - 30-case benchmark (22 bad, 8 clean, 15 held-out), LLM-reads-the-diff and CODEOWNERS baselines, frozen results
 - GitHub status check (the gate runs on its own repo and blocked several of our PRs today; we fixed the code),
   rollback command that re-verifies merged commits and opens revert PRs
