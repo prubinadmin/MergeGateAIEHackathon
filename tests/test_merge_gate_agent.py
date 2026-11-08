@@ -177,7 +177,7 @@ def test_gate_runs_in_background_and_chat_stays_responsive():
         async def send(t, card):
             out.append(t)
 
-        async def slow_run(pr_id):
+        async def slow_run(pr_id, llm):
             await release.wait()
             return _report(), []
 
@@ -196,7 +196,7 @@ def test_gate_runs_in_background_and_chat_stays_responsive():
 def test_run_over_budget_is_a_timeout_failure_reply(monkeypatch):
     monkeypatch.setattr(agent, "GATE_BUDGET_S", 0.05)
 
-    async def hung_run(pr_id):
+    async def hung_run(pr_id, llm):
         await asyncio.Event().wait()  # a specialist that never answers
 
     out = _run("verify demo-1", FakeState(), run=hung_run)
@@ -207,7 +207,7 @@ def test_run_over_budget_is_a_timeout_failure_reply(monkeypatch):
 def test_commands_and_traces_join_the_hash_chain():
     s = FakeState()
 
-    async def run(pr_id):
+    async def run(pr_id, llm):
         return _report(), ["Rules agent: done in 3 ms"]
 
     _run("why demo-2", s, sender=SENDER)
@@ -422,6 +422,48 @@ def test_github_verify_resolves_clones_registers_and_replies(tmp_path, monkeypat
         shutil.rmtree(state.prs["gh:acme/shop#1"].repo_path, ignore_errors=True)
 
 
+def _github_shop(tmp_path, monkeypatch):
+    """Fake GitHub API for acme/shop#1 + a real local bare clone source; returns a run() recorder."""
+    from test_github_pr import _bare_with_pull_ref, _fake_github, _pr_json
+
+    bare, sha = _bare_with_pull_ref(tmp_path)
+    pr_json = {**_pr_json("acme/shop", 1), "head": {"sha": sha}}
+    _fake_github(monkeypatch, lambda path: pr_json if path == "/repos/acme/shop/pulls/1" else pytest.fail(path))
+    monkeypatch.setattr(agent.github_pr, "default_clone_url", lambda owner, repo: bare)
+    runs = []
+
+    async def run(pr_id, llm):
+        runs.append((pr_id, llm))
+        return _report(), []
+
+    return run, runs
+
+
+def test_github_pr_from_an_unknown_sender_is_a_static_scan(tmp_path, monkeypatch):
+    """The sandbox executes a third-party repo's code: without MERGE_GATE_CHAT_GITHUB_ALLOW nobody gets it from chat."""
+    monkeypatch.delenv("MERGE_GATE_CHAT_GITHUB_ALLOW", raising=False)
+    run, runs = _github_shop(tmp_path, monkeypatch)
+    s = FakeState()
+    out = _run("verify acme/shop#1", s, use_llm=True, run=run, sender=SENDER)
+    assert runs == [("gh:acme/shop#1", False)]  # Rules + OwnerRouter only
+    assert out[0][0] == ("Found https://github.com/acme/shop/pull/1. Cloning and running the gate... big repos take minutes.\n"
+                         f"Static scan only: sandbox runs for GitHub PRs are limited to allow-listed senders; your sender address "
+                         f"is {SENDER}. Rules and code owners still run.")
+    # re-verifying the now-registered gh: id does not reopen the sandbox either; demo PRs keep the full run
+    _run("verify gh:acme/shop#1", s, use_llm=True, run=run, sender=SENDER)
+    _run("verify demo-1", s, use_llm=True, run=run, sender=SENDER)
+    assert runs[1:] == [("gh:acme/shop#1", False), ("demo-1", True)]
+    assert "Static scan only" not in _run("verify demo-2", s, use_llm=True, run=run, sender=SENDER)[0][0]
+
+
+def test_github_pr_from_an_allow_listed_sender_runs_everything(tmp_path, monkeypatch):
+    monkeypatch.setenv("MERGE_GATE_CHAT_GITHUB_ALLOW", f"agent1qsomeoneelse, {SENDER} ")
+    run, runs = _github_shop(tmp_path, monkeypatch)
+    out = _run("verify acme/shop#1", FakeState(), use_llm=True, run=run, sender=SENDER)
+    assert runs == [("gh:acme/shop#1", True)] and "Static scan only" not in out[0][0]
+    assert not agent.chat_github_allowed("") and not agent.chat_github_allowed("agent1qstranger")
+
+
 def test_github_lookup_failure_is_a_clear_reply(tmp_path, monkeypatch):
     from test_github_pr import _fake_github
 
@@ -442,7 +484,7 @@ def test_status_lists_last_run_per_pr_with_specialist_timings(monkeypatch):
     monkeypatch.delenv("ASI_ONE_API_KEY", raising=False)
     s = FakeState()
 
-    async def run(pr_id):
+    async def run(pr_id, llm):
         return _report(), ["Rules agent: done in 3 ms", "OwnerRouter agent: done in 5 ms"]
 
     assert "no runs yet" in _run("status", s)[0][0]

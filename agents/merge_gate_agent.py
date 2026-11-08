@@ -247,8 +247,9 @@ def verdict_card(r: VerdictReport) -> dict[str, str]:
 
 
 Send = Callable[[str, "dict[str, str] | None"], Awaitable[None]]
-# pr_id -> (report, one line per specialist agent). Default: the whole gate in-process.
-Run = Callable[[str], Awaitable["tuple[VerdictReport, list[str]]"]]
+# (pr_id, llm) -> (report, one line per specialist agent); llm=False is the static scan (Rules + OwnerRouter only).
+# Default: the whole gate in-process.
+Run = Callable[[str, bool], Awaitable["tuple[VerdictReport, list[str]]"]]
 
 
 def short_addr(address: str) -> str:
@@ -311,9 +312,8 @@ def status_text(state, use_llm: bool) -> str:
 async def _pr_reply(cmd: Command, state, sender: str) -> str | None:
     """The reply to a command on a PR that never runs the gate; None when it is a gate run (known PR or GitHub query)."""
     if cmd.pr_id not in state.prs:
-        if cmd.kind == "verify" and is_github_query(cmd.pr_id):
-            return None  # a live GitHub PR: handle() resolves, clones and registers it
-        return f'Unknown PR "{cmd.pr_id}". Say "list PRs" to see the demo PRs, or "verify owner/repo#N" for a GitHub PR.'
+        github = cmd.kind == "verify" and is_github_query(cmd.pr_id)  # a live GitHub PR: handle() resolves and clones it
+        return None if github else f'Unknown PR "{cmd.pr_id}". Say "list PRs" to see the demo PRs, or "verify owner/repo#N" for a GitHub PR.'
     if cmd.kind == "block":
         return await _record_block_request(cmd, sender)
     if cmd.kind == "why":
@@ -345,14 +345,29 @@ async def _parse(text: str, state) -> Command:
     return await asyncio.to_thread(llm_command, text, set(state.prs)) or cmd
 
 
-async def _ack(cmd: Command, state, send: Send):
-    """The immediate reply before a gate run. A GitHub query is resolved first (one API call) so the ack names the PR."""
-    if cmd.pr_id in state.prs:
-        await send(f"Running the gate on {cmd.pr_id}: rules, code owners, sandbox...", None)
-        return None
-    resolved = await asyncio.to_thread(github_pr.resolve, cmd.pr_id)
-    await send(f"Found {resolved.html_url}. Cloning and running the gate... big repos take minutes.", None)
-    return resolved
+def chat_github_allowed(sender: str) -> bool:
+    """MERGE_GATE_CHAT_GITHUB_ALLOW: comma-separated agent addresses whose chat may run TestWriter + Sandbox on a
+    GitHub PR, i.e. execute a third-party repo's code on this machine. Empty (the default) means nobody."""
+    allowed = {a.strip() for a in os.environ.get("MERGE_GATE_CHAT_GITHUB_ALLOW", "").split(",") if a.strip()}
+    return bool(sender) and sender in allowed
+
+
+STATIC_ONLY = ("Static scan only: sandbox runs for GitHub PRs are limited to allow-listed senders; your sender address "
+               "is {addr}. Rules and code owners still run.")
+
+
+async def _ack(cmd: Command, state, send: Send, sender: str, use_llm: bool):
+    """The immediate reply before a gate run -> (resolved GitHub PR or None, whether TestWriter + Sandbox may run).
+    A GitHub query is resolved first (one API call) so the ack names the PR. The sandbox runs a third-party repo's
+    code, so for any GitHub PR (new or already registered as gh:...) it is limited to allow-listed senders."""
+    resolved = None if cmd.pr_id in state.prs else await asyncio.to_thread(github_pr.resolve, cmd.pr_id)
+    github = resolved is not None or cmd.pr_id.startswith("gh:")
+    full = use_llm and not (github and not chat_github_allowed(sender))
+    head = (f"Found {resolved.html_url}. Cloning and running the gate... big repos take minutes." if resolved
+            else f"Running the gate on {cmd.pr_id}: rules, code owners, sandbox...")
+    note = "\n" + STATIC_ONLY.format(addr=sender or "unknown") if use_llm and not full else ""
+    await send(head + note, None)
+    return resolved, full
 
 
 async def _materialize(resolved, state) -> str:
@@ -372,8 +387,8 @@ async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run |
     """
     cmd = Command("help")
 
-    async def in_process(pr_id: str):
-        return await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}, source="asi-one"), []
+    async def in_process(pr_id: str, llm: bool):
+        return await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": llm}, source="asi-one"), []
 
     run = run or in_process
     try:
@@ -384,14 +399,14 @@ async def handle(text: str, state, send: Send, use_llm: bool = False, run: Run |
         reply = await _quick_reply(cmd, state, sender, use_llm)
         if reply is not None:
             return await send(reply, None)
-        resolved = await _ack(cmd, state, send)
+        resolved, full = await _ack(cmd, state, send, sender, use_llm)
     except Exception as e:  # noqa: BLE001 - the user gets the failure, not silence
         return await _reply_failure(send, e)
 
     async def job() -> None:
         try:
             pr_id = await _materialize(resolved, state) if resolved else cmd.pr_id  # the clone has its own timeout
-            report, trace = await asyncio.wait_for(run(pr_id), GATE_BUDGET_S)
+            report, trace = await asyncio.wait_for(run(pr_id, full), GATE_BUDGET_S)
             await asyncio.to_thread(store.append, "agent_trace", {"pr_id": pr_id, "trace": list(trace)})
             await send(format_verdict(report, trace), verdict_card(report))
         except Exception as e:  # noqa: BLE001
@@ -459,10 +474,10 @@ def build_agents(seed: str, port: int = 8001, use_llm: bool = False) -> list:
                 content.append(MetadataContent(type="metadata", metadata=card))
             await ctx.send(sender, ChatMessage(timestamp=datetime.now(timezone.utc), msg_id=uuid4(), content=content))
 
-        async def run(pr_id: str):
+        async def run(pr_id: str, llm: bool):
             t0 = time.monotonic()  # the logged ms covers the whole fan-out, not just decide()
-            steps, trace = await fan_out(ctx, addresses, state.prs[pr_id], use_llm)  # handle() checked pr_id
-            report = await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": use_llm}, None, steps,
+            steps, trace = await fan_out(ctx, addresses, state.prs[pr_id], llm)  # handle() checked pr_id and llm
+            report = await asyncio.to_thread(state.verify, {"pr_id": pr_id, "llm": llm}, None, steps,
                                              "asi-one", t0)
             return report, trace
 

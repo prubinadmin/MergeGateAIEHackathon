@@ -107,6 +107,10 @@ chat acknowledges with its URL at once, then the background job runs `materializ
 clone, 600 s limit) and registers the PR under `gh:owner/repo#N` in the same `State.prs` as the demos, so
 the normal fan-out, `why`, `block` and the card all work on it. The 420 s gate budget starts after the clone.
 Mid-size repos clone in 30-60 s; `--filter=blob:none` keeps even large ones to minutes.
+Because the sandbox executes a third-party repo's code on this machine, a GitHub PR from chat gets only the
+static specialists (Rules + OwnerRouter) unless the sender's agent address is in
+`MERGE_GATE_CHAT_GITHUB_ALLOW` (comma-separated; empty = nobody); the reply says so and shows the sender
+address, so you can allow-list your own ASI:One address after the first message. Demo PRs always get the full run.
 
 ## Run it (you)
 
