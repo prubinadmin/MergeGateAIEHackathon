@@ -17,6 +17,7 @@ interface CaseState {
   chainOk: boolean | null;
   bubbles: Bubble[];
   ownerBlocked: boolean;
+  ownerSaid?: string;  // the owner's latest decision by text: BLOCK, OK, FALSE_ALARM
   startedAt: number;
 }
 
@@ -214,6 +215,7 @@ export default function WarRoom() {
       patch(id, (c) => ({
         ...c,
         ownerBlocked: c.ownerBlocked || r.action === 'block_pr',
+        ownerSaid: ['BLOCK', 'OK', 'FALSE_ALARM'].includes(r.command) ? r.command : c.ownerSaid,
         bubbles: [...c.bubbles, { from: 'gate', text: r.text, at: now() }],
       }));
       refreshStats();
@@ -254,6 +256,7 @@ export default function WarRoom() {
           patch(rec.data.pr_id, (c) => ({
             ...c,
             ownerBlocked: c.ownerBlocked || rec.data.action === 'block_pr',
+            ownerSaid: ['BLOCK', 'OK', 'FALSE_ALARM'].includes(rec.data.command) ? rec.data.command : c.ownerSaid,
             bubbles: [...c.bubbles, { from: 'owner', text: `${raw}  (from ${rec.data.owner}'s phone)`, at: now() }],
           }));
           refreshStats();
@@ -281,6 +284,8 @@ export default function WarRoom() {
   };
 
   const pr = prs.find((p) => p.pr_id === sel);
+  // The owner can turn any verdict into BLOCK by text. A text never turns anything into PASS.
+  const shownVerdict = (cs: CaseState): Report['verdict'] | undefined => (cs.ownerBlocked ? 'BLOCK' : cs.report?.verdict);
   const c = cases[sel] || EMPTY;
   const r = c.report;
   const fired = useMemo(() => {
@@ -353,14 +358,14 @@ export default function WarRoom() {
         <div className="grid grid-cols-1 lg:grid-cols-[560px_minmax(0,1fr)] xl:grid-cols-[560px_minmax(0,1fr)_312px] gap-5 p-5">
           <div className="min-w-0">
             <div className="overflow-x-auto">
-              <AgentGraph states={nodeStates(c)} verdict={r?.verdict || null} running={running === sel} />
+              <AgentGraph states={nodeStates(c)} verdict={shownVerdict(c) || null} running={running === sel} />
             </div>
             <div className="mt-4 flex items-center gap-2 text-[14px] text-zinc-300">
               <span className={`w-2 h-2 rounded-full ${r ? (r.verdict === 'BLOCK' ? 'bg-red-500' : r.verdict === 'PASS' ? 'bg-emerald-500' : 'bg-sky-500') : 'bg-zinc-600'}`} />
               {!r && running !== sel && 'Pick a PR and run the gate.'}
               {running === sel && 'Running the real gate on this PR…'}
               {r?.verdict === 'BLOCK' && `Auto-rejected. The merge button was never reachable${c.ownerBlocked ? '; the owner confirmed from their phone' : ''}.`}
-              {r?.verdict === 'REVIEW' && (c.ownerBlocked ? 'The owner decided: BLOCK, from their phone.' : 'Owner decides. The merge waits for the engineer who wrote this code.')}
+              {r?.verdict === 'REVIEW' && (c.ownerBlocked ? `${r.owners[0]?.name || 'The owner'} decided: BLOCK, by text. The merge is closed.` : c.ownerSaid === 'OK' ? `${r.owners[0]?.name || 'The owner'} replied OK. A text cannot approve: they approve on GitHub with their own login.` : 'Owner decides. The merge waits for the engineer who wrote this code.')}
               {r?.verdict === 'PASS' && 'Auto-passed. Nothing found; the owner gets an FYI.'}
             </div>
           </div>
@@ -403,20 +408,26 @@ export default function WarRoom() {
               </div>
             )}
 
-            <div className={`relative overflow-hidden rounded-xl border px-4 py-4 transition-colors duration-200 ${r ? verdictColor(r.verdict).replace(/text-\S+/, '') : 'border-zinc-800'} bg-zinc-900/30`}>
+            <div className={`relative overflow-hidden rounded-xl border px-4 py-4 transition-colors duration-200 ${r ? verdictColor(shownVerdict(c)).replace(/text-\S+/, '') : 'border-zinc-800'} bg-zinc-900/30`}>
               {running === sel && <BorderBeam size={120} duration={4} colorFrom="#f59e0b" colorTo="#fde68a" />}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-                <span className={`shrink-0 rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(r?.verdict)}`}>{r?.verdict || '—'}</span>
+                <span className={`shrink-0 rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(shownVerdict(c))}`}>{shownVerdict(c) || '—'}</span>
                 <div className="min-w-[220px] flex-1 text-[13.5px] leading-snug text-zinc-300">
                   {r && (
-                    <div className={`mb-1 inline-block rounded px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider ${r.verdict === 'BLOCK' ? 'bg-red-500/20 text-red-300' : r.verdict === 'REVIEW' ? 'bg-sky-500/20 text-sky-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
-                      {r.verdict === 'BLOCK' ? 'AUTO-REJECTED' : r.verdict === 'REVIEW' ? 'OWNER DECIDES' : 'AUTO-PASSED'}
+                    <div className={`mb-1 inline-block rounded px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider ${shownVerdict(c) === 'BLOCK' ? 'bg-red-500/20 text-red-300' : r.verdict === 'REVIEW' ? 'bg-sky-500/20 text-sky-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                      {r.verdict !== 'BLOCK' && c.ownerBlocked ? `BLOCKED BY ${(r.owners[0]?.name || 'OWNER').toUpperCase()} BY TEXT`
+                        : r.verdict === 'BLOCK' ? 'AUTO-REJECTED'
+                        : r.verdict === 'REVIEW' ? (c.ownerSaid === 'OK' ? 'OWNER SAID OK · APPROVE ON GITHUB' : c.ownerSaid === 'FALSE_ALARM' ? 'OWNER: FALSE ALARM · LOGGED' : 'OWNER DECIDES')
+                        : 'AUTO-PASSED'}
                     </div>
                   )}
                   <div>
                     {!r && 'No verdict yet.'}
                     {r?.verdict === 'BLOCK' && `The evidence is conclusive, so the gate rejects it on its own. ${r.owners[0]?.name || 'The owner'} is told, with proof.`}
-                    {r?.verdict === 'REVIEW' && `Nothing is provably wrong, so the gate does not decide alone. ${r.owners[0]?.name || 'The owner'}, who wrote this code, decides by text.`}
+                    {r?.verdict === 'REVIEW' && !c.ownerBlocked && !c.ownerSaid && `Nothing is provably wrong, so the gate does not decide alone. ${r.owners[0]?.name || 'The owner'}, who wrote this code, decides by text.`}
+                    {r?.verdict === 'REVIEW' && c.ownerBlocked && `${r.owners[0]?.name || 'The owner'} replied BLOCK from their phone. The merge is closed and the GitHub check is red.`}
+                    {r?.verdict === 'REVIEW' && !c.ownerBlocked && c.ownerSaid === 'OK' && `${r.owners[0]?.name || 'The owner'} replied OK. A text can never approve a merge, so they approve on GitHub with their own login.`}
+                    {r?.verdict === 'REVIEW' && !c.ownerBlocked && c.ownerSaid === 'FALSE_ALARM' && `${r.owners[0]?.name || 'The owner'} called it a false alarm. Logged for the learning loop; the merge still needs their GitHub approval.`}
                     {r?.verdict === 'PASS' && `Every check passed. ${r.owners[0]?.name || 'The owner'} gets a one-line FYI.`}
                   </div>
                   {r && <div className="mt-1 font-mono text-[11px] text-zinc-400">gate {r.gate_version} · decided by decide(), plain code, no AI</div>}
