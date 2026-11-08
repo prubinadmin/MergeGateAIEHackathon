@@ -268,8 +268,8 @@ export default function WarRoom() {
     return () => clearInterval(h);
   }, [recorded, refreshStats]);
   // agentic: scan a live public GitHub PR, register it, then run the gate on it without another click
-  const scan = async () => {
-    const q = gh.query.trim();
+  const scan = async (query?: string) => {
+    const q = (query ?? gh.query).trim();
     if (!q || gh.busy || running) return;
     setGh((g) => ({ ...g, busy: true, note: `Finding and cloning ${q}… (big repos take a few minutes)` }));
     try {
@@ -282,6 +282,20 @@ export default function WarRoom() {
       setGh((g) => ({ ...g, busy: false, note: (e as Error).message }));
     }
   };
+
+  // The simulator's "analyze a GitHub PR" box hands the URL here, so a pasted PR always runs the real gate.
+  const scanRef = useRef(scan);
+  scanRef.current = scan;
+  useEffect(() => {
+    const onScan = (e: Event) => {
+      const q = String((e as CustomEvent).detail || '').trim();
+      if (!q) return;
+      setGh((g) => ({ ...g, query: q }));
+      scanRef.current(q);
+    };
+    window.addEventListener('merge-gate:scan', onScan);
+    return () => window.removeEventListener('merge-gate:scan', onScan);
+  }, []);
 
   const pr = prs.find((p) => p.pr_id === sel);
   // The owner can turn any verdict into BLOCK by text. A text never turns anything into PASS.
