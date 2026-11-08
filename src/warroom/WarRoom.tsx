@@ -81,14 +81,17 @@ function CaseClock({ startedAt, clock, running }: { startedAt: number; clock: nu
 
 function Lane({ title, ev, children }: { title: string; ev?: StageEvent; children?: React.ReactNode }) {
   const status = ev?.status;
+  const failed = status === 'done' && !!ev?.error;
+  const secs = `${((ev?.ms || 0) / 1000).toFixed(1)}s`;
   return (
-    <div className={`rounded-xl border px-4 py-3 ${status === 'start' ? 'border-amber-500/60 bg-amber-500/5' : 'border-zinc-800 bg-zinc-900/40'}`}>
-      <div className="flex items-center justify-between font-mono text-[11.5px] tracking-wider">
+    <div className={`rounded-xl border px-4 py-3 ${status === 'start' ? 'border-amber-500/60 bg-amber-500/5' : failed ? 'border-red-900/70 bg-zinc-900/40' : 'border-zinc-800 bg-zinc-900/40'}`}>
+      <div className="flex items-center justify-between gap-3 font-mono text-[11.5px] tracking-wider">
         <span className="text-amber-400">{title}</span>
-        <span className="text-zinc-500">
-          {status === 'done' ? <span className="text-zinc-300">✓ DONE · {((ev?.ms || 0) / 1000).toFixed(1)}s</span>
-            : status === 'start' ? <span className="text-amber-300 animate-pulse">RUNNING…</span>
-              : status === 'skipped' ? 'SKIPPED' : 'WAITING'}
+        <span className="shrink-0 whitespace-nowrap tabular-nums">
+          {failed ? <span className="text-red-300">✗ ERROR · {secs}</span>
+            : status === 'done' ? <span className="text-zinc-200">✓ DONE · {secs}</span>
+              : status === 'start' ? <span className="text-amber-300 animate-pulse">RUNNING…</span>
+                : status === 'skipped' ? <span className="text-zinc-400">SKIPPED</span> : <span className="text-zinc-500">WAITING</span>}
         </span>
       </div>
       {children && <div className="mt-2 text-[13px] text-zinc-200">{children}</div>}
@@ -109,12 +112,12 @@ function Phone({ owner, c, onReply, busy }: { owner?: string; c: CaseState; onRe
       <div className="text-center text-[11px] text-zinc-500">iMessage</div>
       <div className="text-center text-[13px] font-semibold text-zinc-100">Merge Gate → {owner || 'code owner'}</div>
       <div ref={box} className="mt-3 h-[360px] overflow-y-auto space-y-2 px-1">
-        {!c.bubbles.length && <div className="pt-24 text-center text-[12px] text-zinc-600">The owner's phone is quiet until the gate decides.</div>}
+        {!c.bubbles.length && <div className="px-4 pt-24 text-center text-[12px] leading-relaxed text-zinc-400">The owner's phone is quiet until the gate decides. Run the gate to see the text it sends.</div>}
         {c.bubbles.map((b, i) => (
           <div key={i} className={`flex ${b.from === 'owner' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[85%] whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-2xl px-3 py-2 text-[12.5px] leading-snug ${b.from === 'owner' ? 'bg-blue-600 text-white rounded-br-md' : 'bg-zinc-800 text-zinc-100 rounded-bl-md'}`}>
               {b.text}
-              <div className="mt-1 text-[9.5px] opacity-50">{b.at}</div>
+              <div className="mt-1 text-[10px] tabular-nums opacity-60">{b.at}</div>
             </div>
           </div>
         ))}
@@ -122,12 +125,12 @@ function Phone({ owner, c, onReply, busy }: { owner?: string; c: CaseState; onRe
       <div className="mt-2 grid grid-cols-4 gap-1.5">
         {['BLOCK', 'WHY', 'OK', 'FALSE ALARM'].map((t) => (
           <button key={t} disabled={!canReply} onClick={() => onReply(t)}
-            className={`rounded-lg py-1.5 text-[10.5px] font-semibold transition disabled:opacity-30 ${t === 'BLOCK' ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'}`}>
+            className={`rounded-lg py-1.5 text-[10.5px] font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-30 ${t === 'BLOCK' ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'}`}>
             {t}
           </button>
         ))}
       </div>
-      <div className="mt-2 text-center text-[10px] text-zinc-600">A text can block a merge. It can never approve one.</div>
+      <div className="mt-2 text-center text-[10.5px] text-zinc-400">A text can block a merge. It can never approve one.</div>
     </div>
   );
 }
@@ -324,16 +327,16 @@ export default function WarRoom() {
               </button>
             );
           })}
-          <form onSubmit={(e) => { e.preventDefault(); scan(); }} className="flex items-center gap-2">
+          <form onSubmit={(e) => { e.preventDefault(); scan(); }} className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <input value={gh.query} onChange={(e) => setGh((g) => ({ ...g, query: e.target.value }))} disabled={recorded || gh.busy}
-              placeholder="Scan a live GitHub PR: requests · owner/repo · owner/repo#42 · PR URL"
+              placeholder={recorded ? 'Scanning needs the live gate: python -m merge_gate serve' : 'Scan a live GitHub PR: owner/repo#42 or PR URL'}
               aria-label="Scan a live GitHub pull request"
-              className="w-[340px] rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-[12.5px] text-zinc-100 placeholder:text-zinc-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:opacity-40" />
+              className="h-8 min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 text-[12.5px] text-zinc-100 placeholder:text-zinc-500 sm:w-[300px] sm:flex-none disabled:cursor-not-allowed disabled:opacity-50" />
             <button type="submit" disabled={recorded || gh.busy || !gh.query.trim() || !!running}
-              className="flex items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-[12.5px] font-semibold text-amber-200 transition-colors duration-150 hover:bg-amber-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-35">
-              {gh.busy ? <Loader2 size={13} className="animate-spin" /> : <GitPullRequest size={13} />} Scan
+              className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 text-[12.5px] font-semibold text-amber-200 transition-colors duration-150 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40">
+              {gh.busy ? <Loader2 size={13} className="animate-spin" /> : <GitPullRequest size={13} />} {gh.busy ? 'Scanning…' : 'Scan'}
             </button>
-            {gh.note && <span role="status" className="max-w-[320px] truncate text-[11.5px] text-zinc-400" title={gh.note}>{gh.note}</span>}
+            {gh.note && <span role="status" className="basis-full text-[11.5px] leading-snug text-zinc-400 [overflow-wrap:anywhere] sm:max-w-[360px]">{gh.note}</span>}
           </form>
           <div className="ml-auto flex items-center gap-4">
             <label title={recorded ? 'Recorded with Muse Spark on' : undefined} className="flex items-center gap-2 text-[12px] text-zinc-400 font-mono">
@@ -373,7 +376,7 @@ export default function WarRoom() {
                 </div>
                 <div className="mt-3 flex items-center gap-3">
                   <button onClick={() => run(pr.pr_id)} disabled={!!running}
-                    className="flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-1.5 text-[13px] font-semibold text-zinc-950 hover:bg-amber-400 disabled:opacity-40">
+                    className="flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-1.5 text-[13px] font-semibold text-zinc-950 transition-colors duration-150 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">
                     <Play size={14} /> {running === pr.pr_id ? 'Running…' : r ? 'Run again' : 'Run the gate'}
                   </button>
                   <button onClick={() => setShowDiff((s) => !s)} className="text-[12.5px] text-zinc-400 hover:text-zinc-200">{showDiff ? 'Hide diff' : 'View diff'}</button>
@@ -393,13 +396,18 @@ export default function WarRoom() {
               </div>
             )}
 
-            {c.error && <div className="rounded-xl border border-red-900 bg-red-950/40 px-4 py-3 text-[13px] text-red-200 font-mono">{c.error}</div>}
+            {c.error && (
+              <div role="alert" className="rounded-xl border border-red-900 bg-red-950/40 px-4 py-3 text-[13px] text-red-200 [overflow-wrap:anywhere]">
+                <span className="font-mono">{c.error}</span>
+                <div className="mt-1 text-[12px] text-red-200/80">The run stopped early. Check that the gate is still serving, then press Run again.</div>
+              </div>
+            )}
 
             <div className={`relative overflow-hidden rounded-xl border px-4 py-4 transition-colors duration-200 ${r ? verdictColor(r.verdict).replace(/text-\S+/, '') : 'border-zinc-800'} bg-zinc-900/30`}>
               {running === sel && <BorderBeam size={120} duration={4} colorFrom="#f59e0b" colorTo="#fde68a" />}
-              <div className="flex items-center gap-4">
-                <span className={`rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(r?.verdict)}`}>{r?.verdict || '—'}</span>
-                <div className="text-[13.5px] text-zinc-300">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+                <span className={`shrink-0 rounded-lg border-2 px-4 py-1 font-mono text-4xl font-bold tracking-[0.2em] ${verdictColor(r?.verdict)}`}>{r?.verdict || '—'}</span>
+                <div className="min-w-[220px] flex-1 text-[13.5px] leading-snug text-zinc-300">
                   {r && (
                     <div className={`mb-1 inline-block rounded px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider ${r.verdict === 'BLOCK' ? 'bg-red-500/20 text-red-300' : r.verdict === 'REVIEW' ? 'bg-sky-500/20 text-sky-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
                       {r.verdict === 'BLOCK' ? 'AUTO-REJECTED' : r.verdict === 'REVIEW' ? 'OWNER DECIDES' : 'AUTO-PASSED'}
@@ -411,7 +419,7 @@ export default function WarRoom() {
                     {r?.verdict === 'REVIEW' && `Nothing is provably wrong, so the gate does not decide alone. ${r.owners[0]?.name || 'The owner'}, who wrote this code, decides by text.`}
                     {r?.verdict === 'PASS' && `Every check passed. ${r.owners[0]?.name || 'The owner'} gets a one-line FYI.`}
                   </div>
-                  {r && <div className="mt-0.5 font-mono text-[11px] text-zinc-500">gate {r.gate_version} · decided by decide(), plain code, no AI</div>}
+                  {r && <div className="mt-1 font-mono text-[11px] text-zinc-400">gate {r.gate_version} · decided by decide(), plain code, no AI</div>}
                 </div>
               </div>
               {r && r.evidence.length > 0 && (
@@ -423,10 +431,10 @@ export default function WarRoom() {
                   ))}
                 </div>
               )}
-              <div className="mt-3 grid grid-cols-9 gap-1.5">
+              <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1.5">
                 {RULES.map((rule) => (
                   <div key={rule.id} title={RULE_LABEL[rule.id]}
-                    className={`rounded py-1 text-center font-mono text-[12px] border ${fired[rule.id] === 'block' ? 'bg-red-500 text-white border-red-400' : fired[rule.id] === 'review' ? 'bg-sky-600/80 text-white border-sky-400' : 'border-zinc-800 text-zinc-500'}`}>
+                    className={`rounded border py-1 text-center font-mono text-[12px] tabular-nums ${fired[rule.id] === 'block' ? 'bg-red-500 text-white border-red-400' : fired[rule.id] === 'review' ? 'bg-sky-600/80 text-white border-sky-400' : 'border-zinc-800 text-zinc-500'}`}>
                     {rule.short}
                   </div>
                 ))}
@@ -463,12 +471,12 @@ export default function WarRoom() {
               {owners.length > 0 && (
                 <div className="space-y-1.5">
                   {owners.slice(0, 3).map((o, i) => (
-                    <div key={o.email} className="flex items-center gap-3">
+                    <div key={o.email} className="flex flex-wrap items-center gap-x-3 gap-y-1">
                       <span className={`w-20 shrink-0 truncate ${i === 0 ? 'font-semibold text-zinc-100' : 'text-zinc-400'}`}>{o.name}</span>
-                      <div className="h-1.5 flex-1 rounded bg-zinc-800"><div className="h-1.5 rounded bg-amber-500" style={{ width: `${Math.round(o.score * 100)}%` }} /></div>
-                      <span className="w-12 text-right font-mono text-[11.5px] text-zinc-300">{Math.round(o.score * 100)}%</span>
-                      <span className="w-36 text-right font-mono text-[11.5px] text-zinc-500">{o.lines} lines · {o.last_touched}</span>
-                      {i === 0 && <span className="rounded bg-amber-500/15 px-1.5 text-[10.5px] text-amber-300">gets the text</span>}
+                      <div className="h-1.5 min-w-[72px] flex-1 rounded bg-zinc-800"><div className="h-1.5 rounded bg-amber-500" style={{ width: `${Math.round(o.score * 100)}%` }} /></div>
+                      <span className="w-10 shrink-0 text-right font-mono text-[11.5px] tabular-nums text-zinc-200">{Math.round(o.score * 100)}%</span>
+                      <span className="shrink-0 whitespace-nowrap font-mono text-[11.5px] tabular-nums text-zinc-400">{o.lines} lines · {o.last_touched}</span>
+                      {i === 0 && <span className="shrink-0 whitespace-nowrap rounded bg-amber-500/15 px-1.5 text-[10.5px] text-amber-300">gets the text</span>}
                     </div>
                   ))}
                   {routeLine && <div className="pt-1 font-mono text-[11.5px] text-amber-300/90">{routeLine}</div>}
@@ -577,7 +585,7 @@ export default function WarRoom() {
                     {!recorded && !r && <div className="text-[11.5px] text-zinc-500">The gate texts the code owner itself the moment it decides.</div>}
                     {!recorded && r && status !== 'sending' && (
                       <button onClick={() => page(sel)}
-                        className="mt-2 flex items-center gap-1.5 text-[11.5px] text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400">
+                        className="mt-2 flex items-center gap-1.5 rounded text-[11.5px] text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline">
                         <Send size={12} /> Text {r.owners[0]?.name || 'the owner'}{status ? ' again' : ''}
                       </button>
                     )}
@@ -593,8 +601,8 @@ export default function WarRoom() {
           </div>
         </div>
       </div>
-      <div className="px-6 py-4 font-mono text-[11px] text-zinc-600 flex items-center gap-2">
-        <ShieldCheck size={12} /> Every lane above is a real stage of `python -m merge_gate` {recorded ? 'recorded from' : 'streamed from'} {API_BASE}. {recorded ? 'This is a recording of real gate runs.' : 'Nothing on this page is simulated.'}
+      <div className="flex items-start gap-2 px-6 py-4 font-mono text-[11px] leading-relaxed text-zinc-500">
+        <ShieldCheck size={12} className="mt-0.5 shrink-0" /> Every lane above is a real stage of `python -m merge_gate` {recorded ? 'recorded from' : 'streamed from'} {API_BASE}. {recorded ? 'This is a recording of real gate runs.' : 'Nothing on this page is simulated.'}
       </div>
     </div>
   );

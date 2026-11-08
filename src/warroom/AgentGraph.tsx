@@ -14,7 +14,7 @@ interface NodeDef {
 }
 
 const W = 560;
-const H = 590;
+const H = 624;
 const CX = 280;
 const CY = 230;
 

@@ -5,6 +5,8 @@
   :root {
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --accent: 245 158 11; /* amber-500, the committed identity */
+    --focus-ring: #fbbf24; /* amber-400 */
   }
 
   body {
@@ -14,6 +16,19 @@
 
   code, pre, kbd {
     font-family: var(--font-mono);
+  }
+
+  /* Browser surfaces carry the palette too: focus, selection, caret. */
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: rgb(var(--accent) / 0.35);
+    color: #fff;
+  }
+  input, textarea {
+    caret-color: var(--focus-ring);
   }
 }
 
@@ -26,9 +41,9 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(250, 204, 21, 0.25);
+  background: rgb(var(--accent) / 0.25);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(250, 204, 21, 0.45);
+  background: rgb(var(--accent) / 0.45);
 }
