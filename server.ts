@@ -156,8 +156,12 @@ async function startServer() {
       const repo = String(req.query.repo || '').trim();
       const prNumber = parseInt(String(req.query.prNumber || '1'), 10);
 
-      if (!owner || !repo || isNaN(prNumber)) {
-        res.status(400).json({ error: 'Missing owner, repo, or prNumber query parameters.' });
+      // Strict validation: these segments are spliced into an authenticated GitHub API URL, so a value like
+      // "../../user" or "owner?x=" must never reach it (path injection / confused-deputy with our token).
+      const NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/;
+      const validName = (v: string) => NAME_RE.test(v) && !v.includes('..');
+      if (!validName(owner) || !validName(repo) || !Number.isInteger(prNumber) || prNumber <= 0 || prNumber > 10_000_000) {
+        res.status(400).json({ error: 'Invalid owner, repo, or prNumber query parameters.' });
         return;
       }
 
@@ -176,7 +180,7 @@ async function startServer() {
           // Optionally enrich with REST API PR title/author if REST API is not rate-limited
           try {
             const apiRes = await fetch(
-              `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+              `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`,
               { headers: getGitHubHeaders() }
             );
             if (apiRes.ok) {
@@ -198,10 +202,10 @@ async function startServer() {
 
       // 2. Try REST API directly if .patch didn't contain diffs
       const [prRes, filesRes] = await Promise.all([
-        fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, {
+        fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`, {
           headers: getGitHubHeaders(),
         }),
-        fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=50`, {
+        fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}/files?per_page=50`, {
           headers: getGitHubHeaders(),
         }),
       ]);
